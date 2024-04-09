@@ -3,7 +3,8 @@
 # Rev. 4.5.2023,  JKJ : Copy from maw codes space 
 # Rev. 19.5.2023, JKJ : Add version number and rename cdllibs to analog_libs and digital_libs 
 # Rev. 13.6.2023, JKJ : Rename analog_libs and digital_libs analog and digital  
-# Rev. 13.6.2023, JKJ : Get target repo from environment variable ICW_REPO   
+# Rev. 13.6.2023, JKJ : Get target repo from environment variable ICW_REPO  
+
 
 use FileHandle;
 use Getopt::Std;
@@ -14,14 +15,16 @@ use Term::ANSIColor qw(:constants);
 #---------------------------------------------------------------------
 
 my $debug = 0;
-
+my $repo = ""; 
 if ($ENV{'ICW_REPO'} eq "") { 
     printf("Error: Environment variable ICW_REPO not defined\n\n");
     printf("export ICW_REPO=repo_name\n");
-    exit(1);
-}
-
-my $repo = $ENV{'ICW_REPO'};
+    printf("\nWill set repo to icworks_public\n");
+    $repo = "icworks_public";
+} else
+{ 
+    $repo = $ENV{'ICW_REPO'};
+}    
 
 my $svn = ''; # will be defined later
 my $svn_url = 'svn://anyvej11.dk';
