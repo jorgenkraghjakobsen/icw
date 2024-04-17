@@ -15,16 +15,6 @@ use Term::ANSIColor qw(:constants);
 #---------------------------------------------------------------------
 
 my $debug = 0;
-my $repo = ""; 
-if ($ENV{'ICW_REPO'} eq "") { 
-    printf("Error: Environment variable ICW_REPO not defined\n\n");
-    printf("export ICW_REPO=repo_name\n");
-    printf("\nWill set repo to icworks_public\n");
-    $repo = "icworks_public";
-} else
-{ 
-    $repo = $ENV{'ICW_REPO'};
-}    
 
 my $svn = ''; # will be defined later
 my $svn_url = 'svn://anyvej11.dk';
@@ -508,6 +498,19 @@ if ($opts{v}) {
 } elsif ($opts{h}) {
     usage;
 }
+
+#-----------------------------------------------------------------------
+# Set repo 
+#-----------------------------------------------------------------------
+my $repo = ""; 
+if (defined $ENV{'ICW_REPO'}) { 
+    $repo = $ENV{'ICW_REPO'};
+} else { 
+    printf("Warning: Environment variable ICW_REPO not defined\n");
+    printf("export ICW_REPO=repo_name\n");
+    printf("Will set repo to icworks_public\n\n");
+    $repo = "icworks_public";
+}    
 
 
 #-----------------------------------------------------------------------
