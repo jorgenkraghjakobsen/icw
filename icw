@@ -5,7 +5,7 @@
 # Rev. 13.6.2023, JKJ : Rename analog_libs and digital_libs analog and digital  
 # Rev. 13.6.2023, JKJ : Get target repo from environment variable ICW_REPO  
 
-
+use Cwd;
 use FileHandle;
 use Getopt::Std;
 use Term::ANSIColor qw(:constants);
@@ -812,14 +812,59 @@ elsif ($command eq "add") {
     # New components are always placed in trunk
     # Adding a component will put the component under revision control though a checkout
     # Error case : All ready under revision control, Exsist in repository
-    $local_comp_name  = $ARGV[1];   # library name
-    $comp_name = $ARGV[1];
+    
+    # check number for argument is 2 and that the first argument is a directory
+    if (@ARGV != 3) {
+        printf("Usage: icw add <local_library> <repo_target>\n");
+        exit(-1);
+    }
+    
+    # TODO jkj/17.4.2024: make icw add work from any directory    
+    # Implement detect current directory and change to workspace root
+    # Done - but categories not implemented
+      
+
+    my $cwd = cwd();
+    my $ws = workspace_root();
+    my $dirdiff = '';
+    
+    if ($cwd ne $ws) {
+        printf("current dir: %s\n", $cwd);
+        printf("Workspace  : %s\n", $ws);
+        printf("Must be run from workspace root!\n");
+        printf("Will calculate the directory difference and apply to specifed component to be added \n");
+        
+        $dirdiff = $cwd;
+        $dirdiff =~ s/$ws\///; 
+
+        printf("Directory difference: %s\n", $dirdiff);
+    }
+    
+    printf("Workspace  : %s\n", $ws);
+    
+    if ($ARGV[1] =~ /\./ ) {
+        $local_comp_name = $dirdiff ; 
+    }
+    elsif ($dirdiff eq '') {
+        $local_comp_name = $ARGV[1];
+    } else {    
+        $local_comp_name = $dirdiff . "/" . $ARGV[1] ;
+    }
+    
+    # remove trailing slash
+    $local_comp_name =~ s/\/$//;
+
+    $comp_name = $local_comp_name ;
+
     if ($comp_name =~ s/analog\/// ) {$type = "analog";};
     if ($comp_name =~ s/digital\/// ) {$type = "digital";};
     if ($comp_name =~ s/setup\/// ) {$type = "setup";};
     
+    printf("Component path                                 %s\n",$local_comp_name);  
+    printf("Component type                                 %s\n",$type);
+    printf("Component name                                 %s\n",$comp_name);
     
-    printf("Debug: $local_comp_name $comp_name\n");
+    
     # check if directory exist and not currently under revision control
     if (-e "$local_comp_name/.svn" )
     { printf("Local library                                   <ERROR>\n");
@@ -829,30 +874,51 @@ elsif ($command eq "add") {
     else {
         printf("Local library                                   <OK>\n");
     }
-    $repo_target      = $ARGV[2];   # check must be <analog|digital|process|tools>[/category]/
-    if ($repo_target !~ /analog|digital|process|tools|setup[\/.+]/)
+    $repo_target      = $ARGV[2];   # check must be <analog|digital|setup|process|tools>[/category]/
+    if ($repo_target !~ /^(analog|digital|process|tools|setup)\/?([^\/]+)?$/)
     { printf("Repository target                               <ERROR>\n");
+      printf("Must be <analog|digital|setup|process|tools>[/category]/\n");  
       exit(-1);
     }
     else {
         printf("Repository target                               <OK>\n");
+        printf("%s\n",$repo_target);
     }
-
-    printf("Debug: $local_comp_name $comp_name\n");
-
+    $dryrun = 0; 
+    
     $cmd = sprintf("$svn mkdir --parents $svn_url/$repo/components/$repo_target/$comp_name/trunk \\
                   --username $svn_user -m 'Adding component to repo 1/2'");
-    system("$cmd \n");
+    if ($dryrun) { 
+        printf("cd $ws ; $cmd\n");
+    } else {    
+        system("cd $ws ; $cmd \n");
+    } 
 
     $cmd = sprintf("$svn co $svn_url/$repo/components/$repo_target/$comp_name/trunk $type/$comp_name \\
                   --username $svn_user");
-    system("$cmd \n");
-
+    if ($dryrun) { 
+        printf("cd $ws ; $cmd\n");
+    } else {    
+        system("cd $ws ; $cmd \n");
+    }
+    
     $cmd = sprintf("$svn add $local_comp_name/*");
-    system("$cmd \n");
+    if ($dryrun) { 
+        printf("cd $ws ; $cmd\n");
+    } else
+    { system("cd $ws ; $cmd \n");   
+    }
 
     $cmd = sprintf("$svn commit $local_comp_name -m 'Adding component to repo 2/2'");
-    system("$cmd \n");
+    if ($dryrun) { 
+       printf("cd $ws ; $cmd\n");
+    } else {    
+      system("cd $ws ;$cmd \n"); 
+    }
+
+    
+    printf("Component added to repository\n");
+
 }
 
 elsif ($command eq "update" or $command eq "depend") {
@@ -920,7 +986,7 @@ elsif ($command eq "update" or $command eq "depend") {
     } else {
         $inputfile = "workspace.config";
         if (-e "local.lib" ) {
-            `rm local.lib`;
+            `echo "disable for new : rm local.lib"`;
         }
     }
 
