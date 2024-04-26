@@ -10,6 +10,10 @@ use FileHandle;
 use Getopt::Std;
 use Term::ANSIColor qw(:constants);
 
+# grap from git repository
+use Cwd;
+use URI::Escape;
+use LWP::UserAgent;
 #---------------------------------------------------------------------
 # Various global variables
 #---------------------------------------------------------------------
@@ -388,6 +392,46 @@ sub workspace_root {
     return $dir;
 }
 
+use Cwd;
+use URI::Escape;
+use LWP::UserAgent;
+
+sub download_from_github {
+  my ($username, $repo, $file_to_download, $destination_dir) = @_;
+
+  # Build the download URL
+  my $base_url = "https://raw.githubusercontent.com/$username/$repo/master/";
+  my $download_url = $base_url . uri_escape($file_to_download);
+
+  # Create the destination path
+  # If the destination directory doesn't exist, create it
+  if (! -d $destination_dir) {
+      mkdir $destination_dir or die "Could not create destination directory: $!";
+  }
+  
+  my $destination_path = "$destination_dir/$file_to_download";
+
+  # Download the file
+  my $ua = LWP::UserAgent->new();
+  $ua->timeout(10);  # Set a timeout in seconds
+
+  my $res = $ua->get($download_url);
+
+  if ($res->is_success) {
+    # Open the destination file for writing
+    open(my $fh, ">", $destination_path) or die "Could not open file for writing: $!";
+
+    # Write the downloaded content to the file
+    print $fh $res->content;
+
+    close $fh;
+
+    print "\nDownloaded $file_to_download to $destination_dir successfully  ";
+  } else {
+    my $error_msg = $res->status_line;
+    print "Download failed for $file_to_download: $error_msg \n";
+  }
+}
 
 #-----------------------------------------------------------------------
 # Print icw usage and exit
@@ -944,9 +988,17 @@ elsif ($command eq "update" or $command eq "depend") {
             print("\nFine, have fun..\n");
             exit(0);
         }
-        print("\nCopying template from svn:/$repo/software/cad_tools/icw/trunk to current directory...");
-        $cmd = "$svn cat $svn_url/$repo/software/cad_tools/icw/trunk/workspace.config > workspace.config";
-        system($cmd);
+        
+        print("\nDownload single perl file icw in to bin/icw from public git repo github.com/jorgenkraghjakobsen/icw/icw");
+        # Create the bin directory if it doesn't exist
+        my $username = "jorgenkraghjakobsen";
+        my $repo = "icw";
+        my $file_to_download = "icw";
+        my $destination_dir = "bin";
+
+        download_from_github($username, $repo, $file_to_download, $destination_dir);
+
+        download_from_github($username, $repo, "workspace.config", ".");
         print(" [OK]\n\n");
 
         print("Edit workspace.config? [Y/n] ");
