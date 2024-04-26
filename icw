@@ -997,7 +997,9 @@ elsif ($command eq "update" or $command eq "depend") {
         my $destination_dir = "bin";
 
         download_from_github($username, $repo, $file_to_download, $destination_dir);
-
+        # make the downloaded file executable   
+        system("chmod +x bin/icw");
+        
         download_from_github($username, $repo, "workspace.config", ".");
         print(" [OK]\n\n");
 
