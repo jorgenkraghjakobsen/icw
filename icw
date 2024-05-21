@@ -586,20 +586,20 @@ if ($command eq "tag") {
     close(INFILE);
 
     # Find verion number and increment it    
-    $content =~ /my \$version_number = (.+) ;/;
+    $content =~ /^my \$version_number = (.+) ;/;
 
     my $new_version = $1+1;
 
     printf("New verion number is: %s\n", $new_version);
         
-    $content =~ s/^my \$version_number = .+;/my \$version_number = '$new_version' ;/;  
+    $content =~ s/^my \$version_number = .+ ;/my \$version_number = '$new_version'/;  
 
-    $content =~ s/^my \$icw_version = .+ ;/my \$icw_version = '$version_number - $tag_message ';/;
+    $content =~ s/my \$icw_version = .+ ;/my \$icw_version = '$version_number - $tag_message ';/;
   
     open(OUTFILE, ">", $filename) or die "Error opening file for writing: $filename";
 
     # Write the updated content to the file
-    printf("Will rewrite icw \n"); 
+    printf("Will rewrite icw \n\n"); 
     print OUTFILE $content;
     close(OUTFILE);
 
