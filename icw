@@ -599,6 +599,7 @@ if ($command eq "tag") {
     open(OUTFILE, ">", $filename) or die "Error opening file for writing: $filename";
 
     # Write the updated content to the file
+    printf("Will rewrite icw \n"); 
     print OUTFILE $content;
     close(OUTFILE);
 
