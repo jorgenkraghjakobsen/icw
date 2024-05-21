@@ -591,6 +591,7 @@ if ($command eq "tag") {
     my $new_version = $1+1;
     
     $content =~ s/^my \$version_number = .+;/my \$version_number = $new_version ;/;  
+    
     $content =~ s/^my \$icw_version = .+;/my \$icw_version = '$version_number - $tag_message';/;
   
     open(OUTFILE, ">", $filename) or die "Error opening file for writing: $filename";
