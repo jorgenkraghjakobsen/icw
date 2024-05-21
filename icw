@@ -26,8 +26,8 @@ my $svn_url = 'svn://anyvej11.dk';
 my $svn_user = $ENV{'USER'};
 my $svn_port = 3690;
 my $mode = '';
-my $version_number = 124 ;
-my $icw_version = '124 - sdfads' ;
+my $version_number = 125 ;
+my $icw_version = '125 - fixed stray char ' ;
 
 # hash for all components in workspace (populated by add_component and read_config)
 my %components = ();
