@@ -26,7 +26,7 @@ my $svn_url = 'svn://anyvej11.dk';
 my $svn_user = $ENV{'USER'};
 my $svn_port = 3690;
 my $mode = '';
-my $version_number = 122 ;
+my $version_number = 123 ;
 my $icw_version = '120 - Auto incr version number';
 
 # hash for all components in workspace (populated by add_component and read_config)
