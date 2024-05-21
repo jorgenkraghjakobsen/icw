@@ -26,7 +26,7 @@ my $svn_url = 'svn://anyvej11.dk';
 my $svn_user = $ENV{'USER'};
 my $svn_port = 3690;
 my $mode = '';
-my $version_number = '120++';
+my $version_number = 120 ;
 my $icw_version = '120 - Auto incr version number';
 
 # hash for all components in workspace (populated by add_component and read_config)
@@ -578,18 +578,27 @@ if ($command eq "tag") {
     my $tag_message = <STDIN>;
     chomp($tag_message);
     
-    print("Annotating icw source code with release message...\n");
-    open(FIN,"icw");
-    open(FOUT,">icw_release");
-    while (<FIN>) {
-      s/^my \$version_number = .+;/my \$version_number = '$version_number++';/;  
-      s/^my \$icw_version = .+;/my \$icw_version = '$version_number - $tag_message';/;
-      print FOUT;
-    }
-    close(FIN);
-    close(FOUT);
-    `cp icw_release icw`;
+    my $filename = "icw";
+    open(INFILE, "<", $filename) or die "Error opening file: $filename";
+
+    # Read the entire file content
+    my $content = join("", <INFILE>);
+    close(INFILE);
+
+    # Find verion number and increment it    
+    $content =~ /my \$version_number = (.+);/;
+
+    my $new_version = $1+1;
     
+    $content =~ s/^my \$version_number = .+;/my \$version_number = $new_version ;/;  
+    $content =~ s/^my \$icw_version = .+;/my \$icw_version = '$version_number - $tag_message';/;
+  
+    open(OUTFILE, ">", $filename) or die "Error opening file for writing: $filename";
+
+    # Write the updated content to the file
+    print OUTFILE $content;
+    close(OUTFILE);
+
     print("Adding changes to staging area...\n");
     system("git add icw");
 
