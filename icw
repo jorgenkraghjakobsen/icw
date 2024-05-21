@@ -26,7 +26,8 @@ my $svn_url = 'svn://anyvej11.dk';
 my $svn_user = $ENV{'USER'};
 my $svn_port = 3690;
 my $mode = '';
-my $icw_version = ' - wip';
+my $version_number = '120++';
+my $icw_version = '120 - Auto incr version number';
 
 # hash for all components in workspace (populated by add_component and read_config)
 my %components = ();
@@ -581,7 +582,8 @@ if ($command eq "tag") {
     open(FIN,"icw");
     open(FOUT,">icw_release");
     while (<FIN>) {
-      s/^my \$icw_version = .+;/my \$icw_version = ' - $tag_message';/;
+      s/^my \$version_number = .+;/my \$version_number = '$version_number++';/;  
+      s/^my \$icw_version = .+;/my \$icw_version = '$version_number - $tag_message';/;
       print FOUT;
     }
     close(FIN);
