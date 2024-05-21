@@ -5,6 +5,7 @@
 # Rev. 13.6.2023, JKJ : Rename analog_libs and digital_libs analog and digital  
 # Rev. 13.6.2023, JKJ : Get target repo from environment variable ICW_REPO  
 
+
 use Cwd;
 use FileHandle;
 use Getopt::Std;
@@ -568,31 +569,61 @@ if (! defined($command)) {
     usage;
 }
 
-# -- Function to tag icw code up dates and checkin to subversion
+# -- Function to tag icw code updates and push to git repository
 
 if ($command eq "tag") {
-    if (-e "icw") {
-        print("Enter icw checkin comment: ");
-        my $input = <STDIN>;
-        chomp($input);
+  if (-e "icw") {
+    print("Enter Git tag message: ");
+    my $tag_message = <STDIN>;
+    chomp($tag_message);
 
-        print("Annotating icw source code with release message...\n");
-        open(FIN,"icw");
-        open(FOUT,">icw_release");
-        while (<FIN>) {
-            s/^my \$icw_version = .+;/my \$icw_version = '\$Id\$ - $input';/;
-            print FOUT;
-        }
-        close(FIN);
-        close(FOUT);
-        `cp icw_release icw`;
-        $cmd = sprintf("%s ci icw -m \"%s\"", $svn, $input);
-        system($cmd);
+    print("Creating Git tag...\n");
+    $cmd = sprintf("git tag -a -m \"%s\" icw_v%s", $tag_message, $tag_message);
+    system($cmd);
 
-    } else {
-        print("Error: Command only valid in icw development workspace\n");
-        exit 1;
-    }
+    print("Adding changes to staging area...\n");
+    system("git add icw");
+
+    print("Enter Git commit message: ");
+    my $commit_message = <STDIN>;
+    chomp($commit_message);
+
+    print("Committing changes...\n");
+    $cmd = sprintf("git commit -m \"%s\"", $commit_message);
+    system($cmd);
+
+    print("Pushing changes to remote repository...\n");
+    system("git push origin master");  # Assuming 'master' is the branch
+
+  } else {
+    print("Error: Command only valid in icw development workspace\n");
+    exit 1;
+  }
+
+# # -- Function to tag icw code up dates and checkin to subversion
+# if ($command eq "tag") {
+#     if (-e "icw") {
+#         print("Enter icw checkin comment: ");
+#         my $input = <STDIN>;
+#         chomp($input);
+
+#         print("Annotating icw source code with release message...\n");
+#         open(FIN,"icw");
+#         open(FOUT,">icw_release");
+#         while (<FIN>) {
+#             s/^my \$icw_version = .+;/my \$icw_version = '\$Id\$ - $input';/;
+#             print FOUT;
+#         }
+#         close(FIN);
+#         close(FOUT);
+#         `cp icw_release icw`;
+#         $cmd = sprintf("%s ci icw -m \"%s\"", $svn, $input);
+#         system($cmd);
+
+#     } else {
+#         print("Error: Command only valid in icw development workspace\n");
+#         exit 1;
+#     }
 
 
 
