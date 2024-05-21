@@ -26,7 +26,7 @@ my $svn_url = 'svn://anyvej11.dk';
 my $svn_user = $ENV{'USER'};
 my $svn_port = 3690;
 my $mode = '';
-my $version_number = '121'
+my $version_number = 122 ;
 my $icw_version = '120 - Auto incr version number';
 
 # hash for all components in workspace (populated by add_component and read_config)
@@ -592,7 +592,7 @@ if ($command eq "tag") {
 
     printf("New verion number is: %s\n", $new_version);
         
-    $content =~ s/my \$version_number = .+ ;/my \$version_number = '$new_version'/;  
+    $content =~ s/my \$version_number = .+ ;/my \$version_number = $new_version ;/;  
 
     $content =~ s/my \$icw_version = .+ ;/my \$icw_version = '$version_number - $tag_message ';/;
   
