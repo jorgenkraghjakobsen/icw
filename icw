@@ -337,7 +337,7 @@ sub find_hdl_files {
 #---------------------------------------------------------------------
 
 sub write_local_lib {
-    # to do
+    `echo hej >> local.lib`;
 }
 
 
@@ -359,7 +359,8 @@ sub update_component {
 
     } elsif ($components{$comp}{type} eq 'analog' || $components{$comp}{type} eq 'analog6') {
         write_local_lib();
-
+        printf("Here ----------------------------------\n");
+       
     } elsif ($components{$comp}{type} eq 'setup' && -X "setup/$comp/setup") {
         system("setup/$comp/setup");
 
@@ -1040,7 +1041,7 @@ elsif ($command eq "update" or $command eq "depend") {
     } else {
         $inputfile = "workspace.config";
         if (-e "local.lib" ) {
-            `echo "disable for new : rm local.lib"`;
+            `rm local.lib`;
         }
     }
 
@@ -1131,7 +1132,7 @@ elsif ($command eq "update" or $command eq "depend") {
                   printf($cmd);
                   system($cmd);
                   $cmd = sprintf("echo \"DEFINE $comp_name analog/$comp_name #revision $svn_rev from $svn_comp_path\" >> local.lib");
-                  #printf("$cmd \n");
+                  printf("$cmd \n");
                   system($cmd);
               }
               $cmd = sprintf("$icw_cmd depend analog/$comp_name");
