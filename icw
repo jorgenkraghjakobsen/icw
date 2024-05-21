@@ -26,8 +26,9 @@ my $svn_url = 'svn://anyvej11.dk';
 my $svn_user = $ENV{'USER'};
 my $svn_port = 3690;
 my $mode = '';
-my $version_number = 125 ;
-my $icw_version = '125 - fixed stray char ' ;
+my $version_number = 126 ;
+my $icw_version = '126 : Tue May 21 04:29:56 PM CEST 2024
+ : Added date to version tag' ;
 
 # hash for all components in workspace (populated by add_component and read_config)
 my %components = ();
@@ -589,12 +590,13 @@ if ($command eq "tag") {
     $content =~ /my \$version_number = (.+) ;/;
 
     my $new_version = $1+1;
-
+    my $date = `date`;
+    
     printf("New verion number is: %s\n", $new_version);
         
     $content =~ s/my \$version_number = .+ ;/my \$version_number = $new_version ;/;  
 
-    $content =~ s/my \$icw_version = .+/my \$icw_version = '$new_version - $tag_message' ;/;
+    $content =~ s/my \$icw_version = .+/my \$icw_version = '$new_version : $date : $tag_message' ;/;
   
     open(OUTFILE, ">", $filename) or die "Error opening file for writing: $filename";
 
