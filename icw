@@ -586,7 +586,7 @@ if ($command eq "tag") {
     close(INFILE);
 
     # Find verion number and increment it    
-    $content =~ /^my \$version_number = (.+) ;/;
+    $content =~ /my \$version_number = (.+) ;/;
 
     my $new_version = $1+1;
 
