@@ -26,7 +26,7 @@ my $svn_url = 'svn://anyvej11.dk';
 my $svn_user = $ENV{'USER'};
 my $svn_port = 3690;
 my $mode = '';
-my $icw_version = '$Id: icw 91 2023-06-16 07:33:27Z jakobsen $ - Git release';
+my $icw_version = '$Id$ - ';
 
 # hash for all components in workspace (populated by add_component and read_config)
 my %components = ();
@@ -576,20 +576,23 @@ if ($command eq "tag") {
     print("Enter Git tag message: ");
     my $tag_message = <STDIN>;
     chomp($tag_message);
-
-    print("Creating Git tag...\n");
-    $cmd = sprintf("git tag -a -m \"%s\" icw_v%s", $tag_message, $tag_message);
-    system($cmd);
-
+    
+    print("Annotating icw source code with release message...\n");
+    open(FIN,"icw");
+    open(FOUT,">icw_release");
+    while (<FIN>) {
+      s/^my \$icw_version = .+;/my \$icw_version = '\$Id\$ - $input';/;
+      print FOUT;
+    }
+    close(FIN);
+    close(FOUT);
+    `cp icw_release icw`;
+    
     print("Adding changes to staging area...\n");
     system("git add icw");
 
-    print("Enter Git commit message: ");
-    my $commit_message = <STDIN>;
-    chomp($commit_message);
-
     print("Committing changes...\n");
-    $cmd = sprintf("git commit -m \"%s\"", $commit_message);
+    $cmd = sprintf("git commit -m \"%s\"", $tag_message);
     system($cmd);
 
     print("Pushing changes to remote repository...\n");
