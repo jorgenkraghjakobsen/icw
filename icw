@@ -593,7 +593,7 @@ if ($command eq "tag") {
     system($cmd);
 
     print("Pushing changes to remote repository...\n");
-    system("git push origin master");  # Assuming 'master' is the branch
+    system("git push ");  # Assuming 'master' is the branch
 
   } else {
     print("Error: Command only valid in icw development workspace\n");
