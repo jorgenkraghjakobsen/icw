@@ -26,9 +26,8 @@ my $svn_url = 'svn://anyvej11.dk';
 my $svn_user = $ENV{'USER'};
 my $svn_port = 3690;
 my $mode = '';
-my $version_number = 126 ;
-my $icw_version = '126 : Tue May 21 04:29:56 PM CEST 2024
- : Added date to version tag' ;
+my $version_number = 127 ;
+my $icw_version = '127 : Tue May 21 04:30:54 PM CEST 2024 : Added date to tag ' ;
 
 # hash for all components in workspace (populated by add_component and read_config)
 my %components = ();
@@ -591,7 +590,9 @@ if ($command eq "tag") {
 
     my $new_version = $1+1;
     my $date = `date`;
+    chomp($date);
     
+
     printf("New verion number is: %s\n", $new_version);
         
     $content =~ s/my \$version_number = .+ ;/my \$version_number = $new_version ;/;  
