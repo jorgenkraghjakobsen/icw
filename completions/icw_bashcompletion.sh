@@ -12,7 +12,7 @@ _icw_complete() {
             return 0
             ;;
         add) 
-            COMPREPLY=( $(compgen -d) )
+            COMPREPLY=( $(compgen -d -- ${cur}) )
             return 0
             ;;
         *)
@@ -21,7 +21,6 @@ _icw_complete() {
             COMPREPLY=( $(compgen -W "${OPTS}" -- ${cur}) )
             return 0
         fi
-
     esac
 }
 
