@@ -11,6 +11,17 @@ _icw_complete() {
             COMPREPLY=( $(compgen -W "${commands}" -- ${cur}) )
             return 0
             ;;
+        add) 
+            COMPREPLY=( $(compgen -d) )
+            return 0
+            ;;
+        *)
+        if [[ "${COMP_WORDS[1]}" == "add" && ${#COMP_WORDS[@]} -eq 4 ]]; then
+            OPTS="setup digital analog"
+            COMPREPLY=( $(compgen -W "${OPTS}" -- ${cur}) )
+            return 0
+        fi
+
     esac
 }
 
