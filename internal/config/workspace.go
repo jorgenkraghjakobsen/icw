@@ -49,7 +49,12 @@ func CreateWorkspaceConfig(dir string) error {
 	}
 
 	// Create example config
-	example := `# ICW Workspace Configuration
+	example := `################################################################################
+# ICW Workspace Configuration
+################################################################################
+#
+# REQUIRED: Set environment variable before running icw:
+#   export ICW_REPO=your_repo_name
 #
 # Syntax:
 #   use component("path/to/component", "type", "branch")
@@ -57,14 +62,51 @@ func CreateWorkspaceConfig(dir string) error {
 #   use component("path/to/component")                  # infers type from path
 #   use ref("/absolute/path/to/local/component")        # local reference
 #
-# Types: analog, digital, setup, process, tools
-# VCS: analog/digital/setup/process use SVN, tools use Git
+# Component Types:
+#   analog   - Analog/mixed-signal components (SVN)
+#   digital  - Digital HDL components (SVN)
+#   setup    - Setup/configuration scripts (SVN)
+#   process  - Process technology files (SVN)
+#   tools    - Software tools and scripts (Git)
 #
-# Examples:
-#   use component("analog/bias", "analog", "trunk")
-#   use component("digital/top", "digital", "tags/v1.0")
-#   use component("setup/analog", "setup")
-#   use component("tools/cad_utils", "tools", "main")   # Git branch
+# Branch Formats:
+#   SVN: trunk, tags/v1.0.0, branches/feature_name
+#   Git: main, develop, tags/v2.1.0, feature/new-feature
+#
+# Dependencies:
+#   Component dependencies are automatically resolved from depend.config
+#   files in each component directory.
+#
+################################################################################
+# Examples
+################################################################################
+#
+# Released analog component:
+#   use component("analog/bandgap_1v2", "analog", "tags/v2.1.0")
+#
+# Development version:
+#   use component("analog/opamp_folded", "analog", "trunk")
+#
+# Feature branch:
+#   use component("digital/spi_master", "digital", "branches/feature_x")
+#
+# Auto-detect type from path:
+#   use component("setup/analog")
+#
+# Git-based tools:
+#   use component("tools/layout_scripts", "tools", "main")
+#
+# Local development component:
+#   use ref("/home/user/local_dev/custom_cell")
+#
+################################################################################
+# Your Components - Add your components below
+################################################################################
+
+# Uncomment and edit these examples:
+# use component("analog/bias", "analog", "trunk")
+# use component("digital/top", "digital", "tags/v1.0")
+# use component("setup/analog", "setup")
 
 `
 
