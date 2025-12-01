@@ -1,0 +1,1265 @@
+#!/usr/bin/perl -w
+
+# Rev. 4.5.2023,  JKJ : Copy from maw codes space 
+# Rev. 19.5.2023, JKJ : Add version number and rename cdllibs to analog_libs and digital_libs 
+# Rev. 13.6.2023, JKJ : Rename analog_libs and digital_libs analog and digital  
+# Rev. 13.6.2023, JKJ : Get target repo from environment variable ICW_REPO  
+
+
+use Cwd;
+use FileHandle;
+use Getopt::Std;
+use Term::ANSIColor qw(:constants);
+
+# grap from git repository
+use Cwd;
+use URI::Escape;
+use LWP::UserAgent;
+#---------------------------------------------------------------------
+# Various global variables
+#---------------------------------------------------------------------
+
+my $debug = 0;
+
+my $svn = ''; # will be defined later
+my $svn_url = 'svn://anyvej11.dk';
+my $svn_user = $ENV{'USER'};
+my $svn_port = 3690;
+my $mode = '';
+my $version_number = 127 ;
+my $icw_version = '127 : Tue May 21 04:30:54 PM CEST 2024 : Added date to tag ' ;
+
+# hash for all components in workspace (populated by add_component and read_config)
+my %components = ();
+
+# map component types to workspace locations
+my %type_map = (
+    analog  => 'analog',
+    digital => 'digital',
+    process => '',
+    setup   => 'setup'
+);
+
+#---------------------------------------------------------------------
+# Add component to hash and check if it has dependencies
+#---------------------------------------------------------------------
+
+sub add_component {
+    my ($path, $type, $branch) = @_;
+
+    # find component name from path
+    $path =~ /\/([^\/]+)\/?$/;
+    my $name = $1;
+
+    if (exists($components{$name}{name})) {
+        # component was already encountered - check that branch matched
+        if ($components{$name}{branch} ne $branch) {
+            print STDERR "Error: Component '$name' referenced with multiple branches: $components{$name}{branch} and $branch\n";
+            exit(1);
+
+        # and that path is the same
+        } elsif ($components{$name}{path} ne $path) {
+            print STDERR "Error: Component '$name' referenced with multiple paths: $components{$name}{path} and $path\n";
+            exit(1);
+
+        }
+        # otherwise everything is fine
+
+    } else {
+        # add component to hash
+        $components{$name}{path} = $path;
+        $components{$name}{type} = $type;
+        $components{$name}{branch} = $branch;
+        $components{$name}{depend} = [];
+        $components{$name}{name} = $name;
+
+        if ($mode eq 'update') {
+            update_component($name);
+        }
+
+        # check for workspace existence
+        my $ws_path = "$components{workspace}{path}/$type_map{$type}/$name";
+        if ($type eq 'process') {
+            $ws_path = "$components{workspace}{path}/process_setup";
+        }
+        if (-d $ws_path) {
+            # and dependencies
+            if (-f "$ws_path/depend.config") {
+                read_config($components{$name}, "$ws_path/depend.config");
+            }
+        } else {
+            print STDERR "Error: Component '$name' ($type) not found in '$ws_path'. You should run 'maw update'\n";
+            exit(1);
+        }
+    }
+    return $components{$name};
+}
+
+
+#---------------------------------------------------------------------
+# Read and parse *.config files and add any components found to hash
+#---------------------------------------------------------------------
+
+sub read_config {
+    my ($parent, $file) = @_;
+
+    open(my $fh, $file);
+    while (<$fh>) {
+        if (/^#/) {
+            # comment, ignore
+            next;
+
+        } elsif (/^\s*use\s+component\(\s*(.+)\s*\)/) {
+            (my $comp_path, my $type, my $branch) = split(/\s*,\s*/, $1);
+
+            $comp_path =~ s/"//g;
+            $type =~ s/"//g;
+            $branch =~ s/"//g;
+            printf("#Will add component %s, %s, %s\n", $comp_path, $type, $branch);
+            my $compref = add_component($comp_path, $type, $branch);
+            push @{$parent->{depend}}, $compref;
+        }
+    }
+    close($fh);
+}
+
+
+#---------------------------------------------------------------------
+# 
+#---------------------------------------------------------------------
+
+sub release_component {
+    my ($comp, $release, $message, $indent, $dryrun) = @_;
+
+    # 1. Handle dependencies if any - all components depended upon must be released first
+    foreach my $c (@{$components{$comp}{depend}}) {
+        release_component($c->{name}, $release, $message, $indent.'  ', $dryrun);
+    }
+
+    # at this point all sub-components should be released
+
+    # 2. Check if component is already released
+    my $svn_cmd_str = "$svn ls $svn_url/$repo/components/$components{$comp}{path}/tags/$release 2>/dev/null";
+    `$svn_cmd_str`;
+    if ($? == 0) {
+        print $indent, $comp, " $release already exists\n";
+        # ls command succesful => release already exists and we are done
+        return;
+    }
+
+    # 3. Copy (branch) trunk into the release tag
+    my @svn_cmd = ($svn, 'copy', '--parents', '-m', $message,
+                   "$svn_url/$repo/components/$components{$comp}{path}/$components{$comp}{branch}",
+                   "$svn_url/$repo/components/$components{$comp}{path}/tags/$release");
+    if ($dryrun) {
+        print join(' ', @svn_cmd), "\n";
+    } else {
+        system(@svn_cmd) == 0 or die "Subversion copy (@svn_cmd) failed: $?";
+    }
+
+    # 4. If there are dependencies update depend.config in release branch to point at released sub-components
+    if (scalar @{$components{$comp}{depend}}) {
+
+        # 4a. Create new depend.config
+        open(FOUT, ">depend.config-$comp-$release");
+        foreach my $c (@{$components{$comp}{depend}}) {
+            printf(FOUT "use component(\"%s\", \"%s\", \"tags/%s\");\n", $c->{path}, $c->{type}, $release);
+        }
+        close(FOUT);
+
+        # 4b. Replace depend.config in the release branch
+        if (!$dryrun) {
+            @svn_cmd = ($svn, 'delete', '-m', $message . '(maw release: update depend.config 1/2)',
+                        "$svn_url/$repo/components/$components{$comp}{path}/tags/$release/depend.config");
+            system(@svn_cmd) == 0 or die "Subversion delete (@svn_cmd) failed: $?";
+            @svn_cmd = ($svn, 'import', '-m', $message . '(maw release: update depend.config 2/2)',
+                        "depend.config-$comp-$release", "$svn_url/$repo/components/$components{$comp}{path}/tags/$release/depend.config");
+            system(@svn_cmd) == 0 or die "Subversion import (@svn_cmd) failed: $?";
+        }
+    }
+}
+
+#---------------------------------------------------------------------
+# Print dependencies as pretty tree or some script friendly form
+#---------------------------------------------------------------------
+
+sub print_depend {
+    my ($comp, $out, $arch, $indent, $stop_ref) = @_;
+
+    if ($out eq 'tree') {
+        my $root = workspace_root();
+
+        # In tree-mode we print first and recurce afterwards
+        unless (defined($indent)) {
+            print "Dependency tree for '$comp'\n\n";
+            $indent = 0;
+        }
+
+        printf("%s%s (%s), %s\n", ' 'x$indent, $comp, $components{$comp}{path}, $components{$comp}{branch});
+        foreach my $arch ('package', 'rtl', 'behav') {
+            if (defined($components{$comp}{$arch})) {
+                my $files = join(' ', @{$components{$comp}{$arch}});
+                $files =~ s/$root/.../g;
+                printf("%s  - %s: %s\n", ' 'x$indent, $arch, $files);
+            }
+        }
+    } else {
+        $indent = 0;
+    }
+
+    # recurse into the dependencies
+    foreach my $c (@{$components{$comp}{depend}}) {
+        if (! ($c->{printed}{$arch} || $stop_ref->{$c->{name}})) {
+            print_depend($c->{name}, $out, $arch, $indent+2, $stop_ref) unless ($stop_ref->{$c->{name}});
+        }
+    }
+
+    if ($out ne 'tree') {
+        my @archs = ($arch);
+        if ($arch eq 'all') {
+            @archs = ('rtl', 'behav');
+        }
+        unshift @archs, 'package';
+        foreach my $a (@archs) {
+            if (defined($components{$comp}{$a})) {
+                print join(" \\\n", @{$components{$comp}{$a}}), " \\\n";
+            }
+        }
+    }
+    $components{$comp}{printed}{$arch} = 1 if ($out ne 'tree');
+}
+
+
+#---------------------------------------------------------------------
+# Perform SVN check-out of component to appropriate workspace location
+#---------------------------------------------------------------------
+
+sub svn_co {
+    my $comp = shift;
+    my $comp_url = "$svn_url/$repo/components/$components{$comp}{path}/$components{$comp}{branch}/";
+
+    my $ws_path;
+    if ($components{$comp}{type} eq 'digital') {
+        $ws_path = 'digital/'.$comp;
+    } elsif ($components{$comp}{type} eq 'analog' || $components{$comp}{type} eq 'analog6') {
+        $ws_path = 'analog/'.$comp;
+    } elsif ($components{$comp}{type} eq 'setup') {
+        $ws_path = 'setup/'.$comp;
+    } elsif ($components{$comp}{type} eq 'process') {
+        $ws_path = 'process_setup';
+    }
+
+    my $cmd = "$svn co $comp_url $ws_path";
+    system($cmd);
+
+    if ($? == -1) {
+        die "Failed to execute: $!\n";
+    } elsif ($? != 0) {
+        print STDERR "Error: SVN command failed, see message above and fix the problem before continuing.\n";
+        print STDERR $cmd, "\n";
+
+        exit(1);
+    }
+}
+
+
+#----------------------------------------------------------------------
+# Find HDL files for all digital components and group into rtl or behav
+#----------------------------------------------------------------------
+
+# hash mapping architecture names (found in VHDL files) to either the rtl or behav buckets
+my %arch_map = (
+    rtl => 'rtl',
+    impl => 'rtl',
+    structural => 'rtl',
+    behavioral => 'rtl',
+    testbench => 'behav',
+    asim => 'behav',
+    sim => 'behav'
+);
+
+
+sub find_hdl_files {
+    foreach my $c (keys %components) {
+        # only look at the digital components
+        if ($components{$c}{type} eq 'digital') {
+            my %packages;
+            foreach my $file (glob("$components{workspace}{path}/$type_map{$components{$c}{type}}/$c/*.v")) {
+			   if ($file =~ /_tb\.v/ ) { 
+			     push @{$components{$c}{'behav'}}, $file;
+				 next ; 
+			   }
+			   push @{$components{$c}{'rtl'}}, $file;
+            }
+			foreach my $file (glob("$components{workspace}{path}/$type_map{$components{$c}{type}}/$c/*.svh")) {
+			   if ($file =~ /_tb\.v/ ) { 
+			     push @{$components{$c}{'behav'}}, $file;
+				 next ; 
+			   }
+			   push @{$components{$c}{'rtl'}}, $file;
+            }
+			foreach my $file (glob("$components{workspace}{path}/$type_map{$components{$c}{type}}/$c/*.sv")) {
+			   if ($file =~ /_tb\.sv/ ) { 
+			     push @{$components{$c}{'behav'}}, $file;
+				 next ; 
+			   }
+			   push @{$components{$c}{'rtl'}}, $file;
+            }
+			
+			foreach my $file (glob("$components{workspace}{path}/$type_map{$components{$c}{type}}/$c/*.vhd")) {
+			    open(my $fh, $file);
+                while (<$fh>) {
+                    if (/architecture\s+(\w+)\s+of\s+(\w+)\s+is/i) {
+                        my $arch = $1;
+                        my $entity = $2;
+
+                        if (defined($arch_map{$arch}) && $arch_map{$arch} ne 'ambiguous') {
+                            push @{$components{$c}{$arch_map{$arch}}}, $file;
+                        } else {
+                            print STDERR "Error: Architecture '$arch' of entity '$entity' in '$file' is unknown or ambiguous\n";
+                            exit(1);
+                        }
+                    } elsif (/package\s+body/ || /package\s+\S+\s+is/) {
+                        $packages{$file} = 1;
+                    }
+                }
+                close($fh);
+            }
+            my @pkg_list = keys %packages;
+            if (@pkg_list) {
+                $components{$c}{package} = \@pkg_list;
+            }
+        }
+    }
+}
+
+
+#---------------------------------------------------------------------
+# Write local.lib with all analog components
+#---------------------------------------------------------------------
+
+sub write_local_lib {
+    `echo hej >> local.lib`;
+}
+
+
+#---------------------------------------------------------------------
+# Do SVN update (co) of a component and perform post actions per type
+#---------------------------------------------------------------------
+
+sub update_component {
+    my $comp = shift;
+
+    print BOLD, BLUE, 'Updating component ', $comp, "...\n", RESET;
+
+    # Check out/update the component from SVN
+    svn_co($comp);
+
+    # and perform additional processing depending on component type
+    if ($components{$comp}{type} eq 'digital') {
+        # no action
+
+    } elsif ($components{$comp}{type} eq 'analog' || $components{$comp}{type} eq 'analog6') {
+        write_local_lib();
+        printf("Here ----------------------------------\n");
+       
+    } elsif ($components{$comp}{type} eq 'setup' && -X "setup/$comp/setup") {
+        system("setup/$comp/setup");
+
+    } elsif ($components{$comp}{type} eq 'process') {
+        unlink('.cdsinit', '.cdsplotinit', 'pdk_version', 'cds.lib');
+        symlink('process_setup/.cdsinit', '.cdsinit');
+        #symlink('process_setup/.cdsplotinit', '.cdsplotinit');
+        symlink('process_setup/pdk_version', 'pdk_version');
+
+        my $cmd = sprintf("cp process_setup/cds.lib cds.lib");
+        system($cmd);
+    }
+}
+
+
+#-----------------------------------------------------------------------
+# Return workspace root directory by searching for workspace.config file
+#-----------------------------------------------------------------------
+
+sub workspace_root {
+    my $dir = $ENV{'PWD'};
+    my $prev = '';
+    while (! -e "$dir/workspace.config") {
+        $dir =~ s/(.+)\/[^\/]+/$1/;
+        if ($prev eq $dir) {
+            return '';
+        }
+        $prev = $dir;
+    }
+    return $dir;
+}
+
+use Cwd;
+use URI::Escape;
+use LWP::UserAgent;
+
+sub download_from_github {
+  my ($username, $repo, $file_to_download, $destination_dir) = @_;
+
+  # Build the download URL
+  my $base_url = "https://raw.githubusercontent.com/$username/$repo/master/";
+  my $download_url = $base_url . uri_escape($file_to_download);
+
+  # Create the destination path
+  # If the destination directory doesn't exist, create it
+  if (! -d $destination_dir) {
+      mkdir $destination_dir or die "Could not create destination directory: $!";
+  }
+  
+  my $destination_path = "$destination_dir/$file_to_download";
+
+  # Download the file
+  my $ua = LWP::UserAgent->new();
+  $ua->timeout(10);  # Set a timeout in seconds
+
+  my $res = $ua->get($download_url);
+
+  if ($res->is_success) {
+    # Open the destination file for writing
+    open(my $fh, ">", $destination_path) or die "Could not open file for writing: $!";
+
+    # Write the downloaded content to the file
+    print $fh $res->content;
+
+    close $fh;
+
+    print "\nDownloaded $file_to_download to $destination_dir successfully  ";
+  } else {
+    my $error_msg = $res->status_line;
+    print "Download failed for $file_to_download: $error_msg \n";
+  }
+}
+
+#-----------------------------------------------------------------------
+# Print icw usage and exit
+#-----------------------------------------------------------------------
+
+sub usage {
+    print << "END";
+usage: icw <subcommand> [options] [args]
+
+IC workspace Workspace Managment Tool, version $icw_version 
+
+Type 'icw help <subcommand>' for help on specific subcommannd.
+Type 'icw -v' to return version number only.
+Type 'icw -u' to update your /home/$ENV{'USER'}/bin/icw to current release.
+
+Available subcommand:
+  add            add a component to the repository.
+  update         to syncronize workspace and repository.
+  status or st   show status between workspace and repository
+  commit or ci   commit changes make in workspace to the repository
+  release        release a component in the repository
+  wipe           reset local workspace to a clean check out.
+  relocate       relocate the target that workingspace is synced to.
+  depend         internal command to trace depend relation args component release
+  dumpdepend or dd
+                 external command to trace depend relation args component release format
+  tag            update maw version with tag in subversion
+
+  release        Release component tree below current component (CWD)
+                  -d    Dry run, analyze component tree without commiting to subversion
+                  -m <message>
+                        Commit message for commits performed during the release process
+                  -t <tag name>
+                        Name of the tag the component is released to.
+
+Written by J�rgen Kragh Jakobsen, IC works (2022-2023)
+END
+    exit(0);
+}
+
+
+$components{workspace} = {
+    path => workspace_root(),
+    branch => 'n/a',
+    type => 'workspace',
+    name => 'workspace',
+    depend => []
+};
+
+
+my $icw_cmd = $0;
+
+#######################################################################################################
+#  subversion client select version that support required auth methods
+#  Use custom compiled svn in users /home/<user>/bin/
+#
+
+use Sys::Hostname;
+my $host = hostname();
+
+$svn = "/usr/bin/svn";
+
+# determine the editor to use for update workspace.config template
+my $editor = 'nedit';
+if (defined($ENV{'EDITOR'})) {
+    $editor = $ENV{'EDITOR'};
+} elsif ($host =~ /fastworker/) {
+    $editor = 'gedit';
+}
+
+
+#-----------------------------------------------------------------------
+# Argument parsing - Initial simple options
+#-----------------------------------------------------------------------
+
+my %opts = ();
+getopts('hvur', \%opts) or usage;
+
+# -- Print version and exit
+
+if ($opts{v}) {
+    printf("%s\n", $icw_version);
+    exit(0);
+
+# -- Update own version of icw to head from subversion depot
+
+} elsif ($opts{u}) {
+    my $target = "$ENV{'HOME'}/bin/icw";
+    my $cmd = sprintf("%s cat %s/$repo/software/cad_tools/icw/trunk/icw > %s",$svn,$svn_url,$target);
+    printf("$cmd\n");
+    system("$cmd");
+    system("chmod 755 $target");
+    exit(0);
+
+
+# -- Return path to workspace root
+
+} elsif ($opts{r}) {
+    if ((my $root = workspace_root()) ne '') {
+        print $root, "\n";
+        exit(0);
+    } else {
+        print STDERR "Error: Not in a workspace.\n";
+        exit(1);
+    }
+    exit(0);
+
+} elsif ($opts{h}) {
+    usage;
+}
+
+#-----------------------------------------------------------------------
+# Set repo 
+#-----------------------------------------------------------------------
+my $repo = ""; 
+if (defined $ENV{'ICW_REPO'}) { 
+    $repo = $ENV{'ICW_REPO'};
+} else { 
+    printf("Warning: Environment variable ICW_REPO not defined\n");
+    printf("export ICW_REPO=repo_name\n");
+    printf("Will set repo to icworks_public\n\n");
+    $repo = "icworks_public";
+}    
+
+
+#-----------------------------------------------------------------------
+# Argument parsing - Sub-commands
+#-----------------------------------------------------------------------
+
+my $command = $ARGV[0];
+
+if (! defined($command)) {
+    usage;
+}
+
+# -- Function to tag icw code updates and push to git repository
+
+if ($command eq "tag") {
+  if (-e "icw") {
+    print("Enter Git tag message: ");
+    my $tag_message = <STDIN>;
+    chomp($tag_message);
+    
+    my $filename = "icw";
+    open(INFILE, "<", $filename) or die "Error opening file: $filename";
+
+    # Read the entire file content
+    my $content = join("", <INFILE>);
+    close(INFILE);
+
+    # Find verion number and increment it    
+    $content =~ /my \$version_number = (.+) ;/;
+
+    my $new_version = $1+1;
+    my $date = `date`;
+    chomp($date);
+    
+
+    printf("New verion number is: %s\n", $new_version);
+        
+    $content =~ s/my \$version_number = .+ ;/my \$version_number = $new_version ;/;  
+
+    $content =~ s/my \$icw_version = .+/my \$icw_version = '$new_version : $date : $tag_message' ;/;
+  
+    open(OUTFILE, ">", $filename) or die "Error opening file for writing: $filename";
+
+    # Write the updated content to the file
+    printf("Will rewrite icw \n\n"); 
+    print OUTFILE $content;
+    close(OUTFILE);
+
+    print("Adding changes to staging area...\n");
+    system("git add icw");
+
+    print("Committing changes...\n");
+    $cmd = sprintf("git commit -m \"%s\"", $tag_message);
+    system($cmd);
+
+    print("Pushing changes to remote repository...\n");
+    system("git push ");  # Assuming 'master' is the branch
+
+  } else {
+    print("Error: Command only valid in icw development workspace\n");
+    exit 1;
+  }
+
+# # -- Function to tag icw code up dates and checkin to subversion
+# if ($command eq "tag") {
+#     if (-e "icw") {
+#         print("Enter icw checkin comment: ");
+#         my $input = <STDIN>;
+#         chomp($input);
+
+#         print("Annotating icw source code with release message...\n");
+#         open(FIN,"icw");
+#         open(FOUT,">icw_release");
+#         while (<FIN>) {
+#             s/^my \$icw_version = .+;/my \$icw_version = '\$Id\$ - $input';/;
+#             print FOUT;
+#         }
+#         close(FIN);
+#         close(FOUT);
+#         `cp icw_release icw`;
+#         $cmd = sprintf("%s ci icw -m \"%s\"", $svn, $input);
+#         system($cmd);
+
+#     } else {
+#         print("Error: Command only valid in icw development workspace\n");
+#         exit 1;
+#     }
+
+
+
+# -- Dump depend
+#
+# Generate a list of all digital hdl sources from depend.config of components
+
+} elsif ($command eq "dumpdepend" || $command eq "dd" ) {
+    if (1) {printf "In dump depend \nCheck arguments \n";};
+    my $dump_comp   = $ARGV[1];
+    my $dump_rel    = $ARGV[2];
+    my $format      = $ARGV[3];
+    my $ext_path    = $ARGV[4];
+    
+    if (0) {
+        printf("Component: $dump_comp  rel: $dump_rel\n");
+        printf("Format [modelsim|dc|incisiv|list] : $format\n");
+    }
+
+    my $root = workspace_root();
+    # List parent component files
+#    $hdl = `ls $root/hdllibs/$dump_comp/*.[v,vhd]`;
+    $hdl = `find $root/digital/$dump_comp -iregex '.*\.\(v\|vhd\)'`;
+    @hdls = split("\n",$hdl);
+    foreach $hdl_source (@hdls)
+    { if ($format eq "dc")
+      { printf("append VHDL_SRCS \"$hdl_source \"\n");
+      }
+      elsif ($format eq "list")
+      { printf("$hdl_source \n");
+      }
+      elsif ($format eq "modelsim")
+      {
+          printf("vcom %s%s\n",$ext_path,$hdl_source);
+      }
+      elsif ($format eq "incisiv")
+      {
+          printf("ncvhdl %s%s\n",$ext_path,$hdl_source);
+      }
+    }
+
+    $call = sprintf("$icw_cmd depend digital/$dump_comp $dump_rel $format $ext_path");
+    system($call);
+
+} elsif ($command eq "tree") {
+    read_config($components{workspace}, workspace_root() . '/workspace.config');
+
+    find_hdl_files();
+
+    print_depend('workspace', 'tree', 'all');
+
+} elsif ($command eq "depend-ng") {
+    shift @ARGV;
+
+    read_config($components{workspace}, workspace_root() . '/workspace.config');
+    
+    # Use the -s comp1,comp2 argument for defining stop list for depend recursion
+    getopts('s:', \%opts) or usage;
+    my %stop = ();
+    if (defined($opts{s})) {
+        foreach my $c (split(/,/, $opts{s})) {
+            $stop{$c} = 1;
+        }
+    }
+
+    find_hdl_files();
+
+    my $dir = $ENV{'PWD'};
+    $dir =~ /.+\/([^\/]+)$/;
+    my $comp = $1;
+
+    if (defined($opts{f}) && $opts{f} eq 'tcl') {
+        print "set sources_rtl {\n";
+        print_depend($comp, '', 'rtl', 0, \%stop);
+        print "}\nsources_behav {\n";
+        print_depend($comp, '', 'behav', 0, \%stop);
+        print "}\n";
+    } else {
+        print "SOURCES_RTL = \\\n";
+        print_depend($comp, '', 'rtl', 0, \%stop);
+        print "\nSOURCES_BEHAV = \\\n";
+        print_depend($comp, '', 'behav', 0, \%stop);
+        print "\n";
+    }
+
+} elsif ($command eq "update-ng") {
+
+    # change to workspace root directory if found
+    if ((my $root = workspace_root()) ne '') {
+        chdir($root);
+    }
+
+    if (! -e "workspace.config" and $command eq "update") {
+        print("\nNo workspace.config file was found...\n\n");
+        print("Do you want to create a new workspace in the current directory? [Y/n] ");
+        my $ans = <STDIN>;
+        if ($ans !~ /y/i && $ans ne "\n") {
+            print("\nFine, have fun..\n");
+            exit(0);
+        }
+        print("\nCopying template from svn:/$repo/software/cad_tools/icw/trunk to current directory...");
+        $cmd = "$svn cat $svn_url/$repo/software/cad_tools/icw/trunk/workspace.config > workspace.config";
+        system($cmd);
+        print(" [OK]\n\n");
+
+        print("Edit workspace.config? [Y/n] ");
+        $ans = <STDIN>;
+        if ($ans =~ /^y$/i || $ans eq "\n") {
+            print("\nCalling $editor workspace.config\n");
+            system("$editor workspace.config");
+        }
+    }
+
+    $mode = 'update';
+    read_config($components{workspace}, 'workspace.config');
+
+} elsif ($command eq "release") {
+    shift @ARGV;
+
+    # Build component tree
+    read_config($components{workspace}, workspace_root() . '/workspace.config');
+
+    # Figure in  which component we are
+    my $dir = $ENV{'PWD'};
+    $dir =~ /.+\/([^\/]+)$/;
+    my $comp = $1;
+
+    # Parse arguments to get release tag name and commit message
+    $opts{d} = 0;
+    getopts('dm:t:', \%opts) or usage;
+    my $release = $opts{t} or die "Error no release name - Usage: icw $command -t <release> -m <message>";
+    my $message = $opts{m} or die "Error no release message - Usage: icw $command -t <release> -m <message>";
+
+    #print "c: ", $comp, ", r: ", $release, ", d: ", $opts{d}, "\n";
+
+    release_component($comp, $release, $message, '',$opts{d});
+
+}
+
+#-----------------------------------------------------Relocate----------------
+#-----------------------------------------------------------------------------
+#  If subverion depot location has moved compare to a local workspace, the
+#  local workspace must be relocated using this function.
+#  Fixed target in code.
+elsif ($command eq "relocate")
+{ my $targets = `find . -maxdepth 3 -type d -name .svn`;
+  chop($targets);
+  $targets =~ s/\/\.svn//g;
+  $targets =~ s/\n/ /g;
+  my @targs = split(/ /,$targets);
+  foreach my $tag (@targs)
+  { my $cmd = sprintf("$svn info $tag");
+    my $res = `$cmd`;
+    my @resl = split(/\n/, $res);
+    foreach my $l (@resl)
+    { if ($l =~ /^URL: (.+)/) { $url = $1; }
+    }
+    my $newurl = $url;
+    $newurl =~ s/<old_ip_address/new_ip_address/;
+    
+    $cmd = sprintf("%s switch --relocate %s %s %s",$svn,$url,$newurl,$tag);
+    printf("$cmd\n");
+    system($cmd);
+  }
+}
+
+#---------------------------------------------------- Status -----------------
+#-----------------------------------------------------------------------------
+# Find and list all dir with .svn dirs
+# issues a svn st for all element of list
+#   Check if URL is output date
+#   Collect all '?' marked library and offer a simple svn add command
+#     on this librarys.
+
+elsif ($command eq "status" | $command eq "st")
+{ # fire svn status on all directories under revision
+    my $targets = `find . -maxdepth 3 -type d -name .svn`;
+    chop($targets);
+#  $librarys = `find cdslibs -maxdepth 2 -type d -name .svn`;
+#  chop($librarys);
+#  $targets = $targets . " " . $librarys;
+    $targets =~ s/\/\.svn//g;
+    $targets =~ s/\n/ /g;
+
+    my @targs = split(/ /,$targets);
+    my $i = 0;
+    my @adds = ();
+    foreach $tag (@targs)
+    { my $wanning = '';
+      # Check what depot url the directory is mirror of
+      # If depot url point to very old and obscure depot due to
+      # changed location / IP address : Issus a wanning.
+      my $cmd = sprintf("$svn info $tag");
+      my $res = `$cmd`;
+      my @resl = split(/\n/, $res);
+      my $url = ();
+      foreach my $l (@resl)
+      { if ($l =~ /^URL: (.+)/) { $url = $1; }
+      }
+      if ($url =~ /90.184.123.49/)      # Old fullrate connection
+      { $wanning = "Following depot URL is out-of-date. Please issue a icw relocate up update workspace\n"; }
+      $cmd = sprintf("$svn status $tag ");
+      $res = `$cmd`;
+      printf("$wanning$tag : $url\n$res");
+      @resl = split(/\n/, $res);
+      foreach my $l (@resl)
+      { if ( $l =~ /^\?\s+(\S+)/ )
+        { #printf("$i: $1 \n");
+            $adds[$i] = $1;
+            $i++;
+        }
+      }
+    }
+    if ($i>0)
+    { printf("Found file(s) not under revision control - add/delete or ignor <a|i>\n");
+      my $ans = <STDIN>;
+      if ($ans eq "a\n")
+      { for (my $j = 0; $j < $i; $j++)
+        { printf("$adds[$j] ? Add/Delete/Ignor <a|d|i>\n");
+          $ans = <STDIN>;
+          if ($ans eq "a\n")
+          { $cmd = sprintf("$svn add $adds[$j]");
+            $res = system($cmd);
+            printf("$res");
+          }
+          elsif ($ans eq "d\n")
+          { $cmd = sprintf("rm $adds[$j]");
+            system($cmd);
+          } else
+          { printf("ignor this\n"); }
+        }
+      }
+      else { printf("ignor all\n"); }
+    }
+}
+elsif ($command eq "commit" | $command eq "ci")
+{ printf("icw commit is not allowed\nUse svn insted\n");
+  printf("enter password:");
+  if ($ARGV[1] eq "")
+  { $commit_note = "na"; }
+  else
+  { $commit_note = $ARGV[1]; }
+
+  $targets = `find ./ -maxdepth 3 -type d -name .svn`;
+  chop($targets);
+  #$librarys = `find cdslibs -maxdepth 2 -type d -name .svn`;
+  #chop($librarys);
+  #$targets = $targets . " " . $librarys;
+  $targets =~ s/\/\.svn//g;
+  $targets =~ s/\n/ /g;
+
+  @targs = split(/ /,$targets);
+  foreach $tag (@targs)
+  { $cmd = sprintf("$svn ci $tag -m '$commit_note'");
+    $res = `$cmd`;
+    printf("$tag : $res\n");
+  }
+}
+
+elsif ($command eq "add") {
+    # Adds a component to the repository. Format icw add <local_library> <repo_target>
+    # New components are always placed in trunk
+    # Adding a component will put the component under revision control though a checkout
+    # Error case : All ready under revision control, Exsist in repository
+    
+    # check number for argument is 2 and that the first argument is a directory
+    if (@ARGV != 3) {
+        printf("Usage: icw add <local_library> <repo_target>\n");
+        exit(-1);
+    }
+    
+    # TODO jkj/17.4.2024: make icw add work from any directory    
+    # Implement detect current directory and change to workspace root
+    # Done - but categories not implemented
+      
+
+    my $cwd = cwd();
+    my $ws = workspace_root();
+    my $dirdiff = '';
+    
+    if ($cwd ne $ws) {
+        printf("current dir: %s\n", $cwd);
+        printf("Workspace  : %s\n", $ws);
+        printf("Must be run from workspace root!\n");
+        printf("Will calculate the directory difference and apply to specifed component to be added \n");
+        
+        $dirdiff = $cwd;
+        $dirdiff =~ s/$ws\///; 
+
+        printf("Directory difference: %s\n", $dirdiff);
+    }
+    
+    printf("Workspace  : %s\n", $ws);
+    
+    if ($ARGV[1] =~ /\./ ) {
+        $local_comp_name = $dirdiff ; 
+    }
+    elsif ($dirdiff eq '') {
+        $local_comp_name = $ARGV[1];
+    } else {    
+        $local_comp_name = $dirdiff . "/" . $ARGV[1] ;
+    }
+    
+    # remove trailing slash
+    $local_comp_name =~ s/\/$//;
+
+    $comp_name = $local_comp_name ;
+
+    if ($comp_name =~ s/analog\/// ) {$type = "analog";};
+    if ($comp_name =~ s/digital\/// ) {$type = "digital";};
+    if ($comp_name =~ s/setup\/// ) {$type = "setup";};
+    
+    printf("Component path                                 %s\n",$local_comp_name);  
+    printf("Component type                                 %s\n",$type);
+    printf("Component name                                 %s\n",$comp_name);
+    
+    
+    # check if directory exist and not currently under revision control
+    if (-e "$local_comp_name/.svn" )
+    { printf("Local library                                   <ERROR>\n");
+      printf("library allready under revision control !!!\n");
+      exit(-1);
+    }
+    else {
+        printf("Local library                                   <OK>\n");
+    }
+    $repo_target      = $ARGV[2];   # check must be <analog|digital|setup|process|tools>[/category]/
+    if ($repo_target !~ /^(analog|digital|process|tools|setup)\/?([^\/]+)?$/)
+    { printf("Repository target                               <ERROR>\n");
+      printf("Must be <analog|digital|setup|process|tools>[/category]/\n");  
+      exit(-1);
+    }
+    else {
+        printf("Repository target                               <OK>\n");
+        printf("%s\n",$repo_target);
+    }
+    $dryrun = 0; 
+    
+    $cmd = sprintf("$svn mkdir --parents $svn_url/$repo/components/$repo_target/$comp_name/trunk \\
+                  --username $svn_user -m 'Adding component to repo 1/2'");
+    if ($dryrun) { 
+        printf("cd $ws ; $cmd\n");
+    } else {    
+        system("cd $ws ; $cmd \n");
+    } 
+
+    $cmd = sprintf("$svn co $svn_url/$repo/components/$repo_target/$comp_name/trunk $type/$comp_name \\
+                  --username $svn_user");
+    if ($dryrun) { 
+        printf("cd $ws ; $cmd\n");
+    } else {    
+        system("cd $ws ; $cmd \n");
+    }
+    
+    $cmd = sprintf("$svn add $local_comp_name/*");
+    if ($dryrun) { 
+        printf("cd $ws ; $cmd\n");
+    } else
+    { system("cd $ws ; $cmd \n");   
+    }
+
+    $cmd = sprintf("$svn commit $local_comp_name -m 'Adding component to repo 2/2'");
+    if ($dryrun) { 
+       printf("cd $ws ; $cmd\n");
+    } else {    
+      system("cd $ws ;$cmd \n"); 
+    }
+
+    
+    printf("Component added to repository\n");
+
+}
+
+elsif ($command eq "update" or $command eq "depend") {
+
+    my $cmd = '';
+    my $ext_path = '';
+    my $format = '';
+    my $release = '';
+    if (@ARGV > 1 && $ARGV[1] =~ /-r(\d+)/ ) {
+        $release = $ARGV[1];
+    }
+
+    # change to workspace root directory if found
+    if ((my $root = workspace_root()) ne '') {
+        chdir($root);
+    }
+
+    if (! -e "workspace.config" and $command eq "update") {
+        print("\nNo workspace.config file was found...\n\n");
+        print("Do you want to create a new workspace in the current directory? [Y/n] ");
+        my $ans = <STDIN>;
+        if ($ans !~ /y/i && $ans ne "\n") {
+            print("\nFine, have fun..\n");
+            exit(0);
+        }
+        
+        print("\nDownload single perl file icw in to bin/icw from public git repo github.com/jorgenkraghjakobsen/icw/icw");
+        # Create the bin directory if it doesn't exist
+        my $username = "jorgenkraghjakobsen";
+        my $repo = "icw";
+        my $file_to_download = "icw";
+        my $destination_dir = "bin";
+
+        download_from_github($username, $repo, $file_to_download, $destination_dir);
+        # make the downloaded file executable   
+        system("chmod +x bin/icw");
+        
+        download_from_github($username, $repo, "workspace.config", ".");
+        print(" [OK]\n\n");
+
+        print("Edit workspace.config? [Y/n] ");
+        $ans = <STDIN>;
+        if ($ans =~ /^y$/i || $ans eq "\n") {
+            print("\nCalling $editor workspace.config\n");
+            system("$editor workspace.config");
+        }
+    }
+
+    my $inputfile = '';
+    my $parrent = '';
+
+    if ($command eq "depend") {
+        if (@ARGV > 2 && $ARGV[2] =~ /-r(\d+)/ ) {
+            $release = $ARGV[2];
+        }
+
+        if (@ARGV > 3 && $ARGV[3] ne '') {
+            $format = $ARGV[3];
+        }
+
+        if (@ARGV > 3 && $ARGV[3] ne '') {
+            $ext_path = $ARGV[4];
+        }
+
+        my @tmp = split(/\//,$ARGV[1]);
+
+        $parrent = $tmp[$#tmp];
+        $inputfile = $ARGV[1] . "/depend.config";
+        if (! -e $inputfile ) {
+            if ($format eq "") { printf(": No depends ... [OK]\n"); }
+            exit(0);
+        } else {
+            if ($format eq "") { printf(": Depends found. Tracing ...\n"); }
+        }
+    } else {
+        $inputfile = "workspace.config";
+        if (-e "local.lib" ) {
+            `rm local.lib`;
+        }
+    }
+
+  open(FIN,$inputfile) || die("Could not open input file $inputfile");
+
+  while (<FIN>) {
+      chomp;
+
+      if (/^#/) {
+          # comment, ignore
+          next;
+
+      } elsif ( /use ref\((.+)\)/ ) {
+          my $ref_lib_path = $1;
+          $ref_lib_path =~ s/\"//g;
+          my @tmp = split(/\//,$ref_lib_path);
+          my $ref_lib_name = $tmp[$#tmp];
+          $cmd = "echo \"DEFINE $ref_lib_name $ref_lib_path\" >> local.lib";
+          print("$cmd\n");
+          system($cmd);
+
+      } elsif (/use component\((.+)\)/) {
+          my $comp_def = $1;
+          $comp_def =~ s/\s*,\s*/,/g;
+          $comp_def =~ s/\"//g;
+          (my $svn_comp_path, my $view, my $svn_rev) = split(/,/,$comp_def);
+          print BOLD, BLUE, "# Component: $svn_comp_path, View: $view, Revision: $svn_rev\n", RESET;
+
+          if ($view eq "process") {
+              $cmd = sprintf("rm -rf process_setup");
+              system($cmd);
+              my @tmp = split(/\//,$svn_comp_path);
+              my $comp_name = $tmp[$#tmp];
+              $cmd = sprintf("$svn co $svn_url/$repo/components/$svn_comp_path/$svn_rev/ process_setup --username $svn_user\n");
+              system($cmd);
+              $cmd = sprintf("ln -sf process_setup/.cdsinit .cdsinit");
+              system($cmd);
+              $cmd = sprintf("cp process_setup/cds.lib cds.lib");
+              system($cmd);
+              #$cmd = sprintf("cp process_setup/.cdsplotinit .cdsplotinit");
+              #system($cmd);
+              $cmd = sprintf("ls -sf process_setup/pdk_version pdk_version");
+              system($cmd);
+
+          } elsif ($view eq "setup" ) {
+              my @tmp = split(/\//,$svn_comp_path);
+              my $comp_name = $tmp[$#tmp];
+              $cmd = sprintf("$svn co $svn_url/$repo/components/$svn_comp_path/$svn_rev/ setup/$comp_name --username $svn_user\n");
+              system($cmd);
+              if (-X "setup/$comp_name/setup") {
+                  system("setup/$comp_name/setup");
+              }
+
+          } elsif ($view eq "analog" || $view eq "analog6") {
+              my @tmp = split(/\//,$svn_comp_path);
+              my $comp_name = $tmp[$#tmp];
+              # Check if component allready defined in local.lib, circular or are conflicting releases
+              if ($parrent eq $comp_name) {
+                  printf("Circular depend detected. $parrent depend on $comp_name. Fix it ...\n ");
+                  exit(-1);
+              }
+              my $defined = 0;
+              if (-e "local.lib") {
+                  open(FLIB,"local.lib") || die("Could not open local.lib");
+                  while (<FLIB>) {
+                      chop;
+                      #print;
+                      #printf("\n");
+                      if (/DEFINE $comp_name /)
+                      { $defined = 1;
+                        my @lib = split(/ /);
+                        my $revision = $lib[4];
+                        if ($svn_rev ne $revision) {
+                            printf("Revision conflict: $revision allready checked out of $comp_name\n");
+                            printf(" ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !\n");
+                            printf(" ! ! !  Please resolve before continue ! ! ! ! ! ! ! !\n");
+                            printf(" ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !\n");
+
+                            exit(0);
+                        }
+                      }
+                  }
+                  close(FLIB);
+              }
+              # if not checkout component and and indset in local.lib
+              if ($defined == 0) {
+                  $cmd = sprintf("$svn co $svn_url/$repo/components/$svn_comp_path/$svn_rev/ analog/$comp_name --username $svn_user\n");
+                  printf($cmd);
+                  system($cmd);
+                  $cmd = sprintf("echo \"DEFINE $comp_name analog/$comp_name #revision $svn_rev from $svn_comp_path\" >> local.lib");
+                  printf("$cmd \n");
+                  system($cmd);
+              }
+              $cmd = sprintf("$icw_cmd depend analog/$comp_name");
+              printf("$cmd ");
+              system($cmd);
+
+          } elsif ($view eq "digital" ) {
+              my @tmp = split(/\//,$svn_comp_path);
+              my $comp_name = $tmp[$#tmp];
+              $cmd = sprintf("$svn co $svn_url/$repo/components/$svn_comp_path/$svn_rev/ digital/$comp_name $release --username $svn_user\n");
+              if ($format eq "") {
+                  system($cmd);
+              } else {
+                  my $hdl = `ls digital/$comp_name/*.vhd`;
+                  my @hdls = split("\n",$hdl);
+                  foreach my $hdl_source (@hdls) {
+                      if ($format eq "dc") {
+                          printf("append VHDL_SRCS \"$hdl_source \"\n");
+                      } elsif ($format eq "list") {
+                          printf("$hdl_source \n");
+                      } elsif ($format eq "modelsim") {
+                          printf("vcom %s%s\n",$ext_path,$hdl_source);
+                      }
+                  }
+              }
+
+              $cmd = sprintf("$icw_cmd depend digital/$comp_name $release $format $ext_path");
+              if ($format eq "") { printf("$cmd "); }
+              system($cmd);
+          }
+      }
+  }
+}
+elsif ($command eq "wipe")
+{ printf("Deleting directory cdslibs, files cds.lib and local.lib:\n");
+  `rm -rf cdslibs`;
+  `rm cds.lib`;
+  `rm local.lib`;
+  printf("OK\n");
+}
+elsif ($command eq "help")
+{
+    if ($ARGV[1] eq "add")
+    { printf("usage: icw add cdslibs/component analog|digital[/sub-category] \n");
+      printf("The analog design is added the component structure under analog or \n");
+      printf("digital and eventually a sub category.\n");
+      printf("The local library is removed a the newly added component is checked out.");
+      printf("All new added components are added to trunk.\n");
+    }
+
+    if ($ARGV[1] eq "add")
+    { printf("usage: icw release all tag \"release comment\" \n");
+      printf("All component defined in current local.lib will be release \n");
+    }
+    elsif ($ARGV[1] eq "update")
+    {
+
+    }
+    elsif ($ARGV[1] eq "commit" | $ARGV[1] eq "ci")
+    { printf("usage: icw commit [\"Check in comment\"]          Check in updated files to repository\n");
+      printf("\n");
+    }
+    elsif ($ARGV[1] eq "dumpdepent" | $ARGV[1] eq "dd")
+    { printf("usage: icw dumpdepent <component> <revision> <modelsim|dc|list> <path>  \n");
+      printf("                                                  Print out given digital component/revision dependencies\n");
+      printf("                                                  as list of checked out vhdl sources\n");
+      printf("Fx:\nicw dd ma12_dig_core_asic trunk dc\n\n");
+      printf("Fx:\nicw dd ma12_dig_core_asic trunk modelsim J:/home/snowdon/work/spy_on_helle\n\n");
+
+    }
+
+    elsif ($ARGV[1] eq "status" | $ARGV[1] eq "st")
+    {
+
+    }
+
+}
+
