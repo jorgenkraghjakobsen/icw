@@ -9,6 +9,7 @@ import (
 	"github.com/jakobsen/icw/internal/component"
 	"github.com/jakobsen/icw/internal/config"
 	"github.com/jakobsen/icw/internal/svn"
+	"github.com/jakobsen/icw/internal/version"
 	"github.com/spf13/cobra"
 )
 
@@ -17,6 +18,16 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(treeCmd)
 	rootCmd.AddCommand(addCmd)
+	rootCmd.AddCommand(versionCmd)
+}
+
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Show version information",
+	Long:  `Display detailed version information including build date and commit.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println(version.Info())
+	},
 }
 
 var updateCmd = &cobra.Command{

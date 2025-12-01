@@ -4,12 +4,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/jakobsen/icw/internal/version"
 	"github.com/spf13/cobra"
-)
-
-var (
-	version = "2.0.0"
-	buildDate = "2024-12-01"
 )
 
 var rootCmd = &cobra.Command{
@@ -17,7 +13,7 @@ var rootCmd = &cobra.Command{
 	Short: "IC Workspace Management Tool",
 	Long: `ICW manages dependencies between analog and digital components.
 Design components are stored in Subversion, software tools in Git.`,
-	Version: fmt.Sprintf("%s (%s)", version, buildDate),
+	Version: version.Short(),
 }
 
 func main() {

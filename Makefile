@@ -7,8 +7,12 @@ CMD_DIR=cmd/icw
 
 # Version info
 VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
-BUILD_DATE=$(shell date +%Y-%m-%d)
-LDFLAGS=-ldflags "-X main.version=$(VERSION) -X main.buildDate=$(BUILD_DATE)"
+COMMIT=$(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_DATE=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS=-ldflags "-s -w \
+	-X github.com/jakobsen/icw/internal/version.Version=$(VERSION) \
+	-X github.com/jakobsen/icw/internal/version.Commit=$(COMMIT) \
+	-X github.com/jakobsen/icw/internal/version.BuildDate=$(BUILD_DATE)"
 
 # Installation paths
 INSTALL_PATH=$(HOME)/bin
@@ -30,8 +34,8 @@ deps:
 	go mod tidy
 
 build:
-	@echo "Building $(BINARY) $(VERSION)..."
-	CGO_ENABLED=0 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY) $(CMD_DIR)/*.go
+	@echo "Building $(BINARY) $(VERSION) ($(COMMIT))..."
+	CGO_ENABLED=0 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY) ./$(CMD_DIR)
 	@echo "Build complete: $(BUILD_DIR)/$(BINARY)"
 
 install: build
