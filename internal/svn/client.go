@@ -18,7 +18,7 @@ type Client struct {
 func NewClient() (*Client, error) {
 	repo := os.Getenv("ICW_REPO")
 	if repo == "" {
-		repo = "icworks_public" // Default repo
+		return nil, fmt.Errorf("ICW_REPO environment variable not set\nPlease set it with: export ICW_REPO=repo_name")
 	}
 
 	username := os.Getenv("USER")

@@ -4,16 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-ICW (IC Workspace Management Tool) is a Perl-based workspace management system for IC design projects. It manages dependencies between analog and digital components stored in Subversion repositories, with support for VHDL, Verilog, and SystemVerilog files.
+ICW (IC Workspace Management Tool) is a workspace management system for IC design projects. It manages dependencies between analog and digital components. The tool is being migrated from Perl to Go for better performance and maintainability.
+
+- **Design components** (analog/digital/setup/process): Stored in Subversion
+- **Software tools**: Stored in Git
+- **Language**: Go (migrating from Perl)
 
 ## Environment Setup
 
-Before using ICW, set the repository environment variable:
+**REQUIRED**: Before using ICW, set the repository environment variable:
 ```bash
 export ICW_REPO=repo_name
 ```
 
-This variable is required and specifies which Subversion repository to use (default: `icworks_public`).
+This variable is **mandatory** and specifies which Subversion repository to use. ICW will refuse to run without it.
 
 ## Key Commands
 
