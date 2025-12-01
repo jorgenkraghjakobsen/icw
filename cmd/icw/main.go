@@ -13,7 +13,10 @@ var rootCmd = &cobra.Command{
 	Short: "IC Workspace Management Tool",
 	Long: `ICW manages dependencies between analog and digital components.
 Design components are stored in Subversion, software tools in Git.`,
-	Version: version.Short(),
+	Version:               version.Short(),
+	SuggestionsMinimumDistance: 2,
+	SilenceErrors:         false,
+	SilenceUsage:          false,
 }
 
 func main() {
