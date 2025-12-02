@@ -15,11 +15,15 @@ type Parser struct {
 	workspace *component.Workspace
 	Repo      string // Repository name from config file
 	SvnURL    string // SVN URL from config file
+	processed map[string]bool // Track processed components to avoid infinite loops
 }
 
 // NewParser creates a new config parser
 func NewParser(ws *component.Workspace) *Parser {
-	return &Parser{workspace: ws}
+	return &Parser{
+		workspace: ws,
+		processed: make(map[string]bool),
+	}
 }
 
 // ParseWorkspaceConfig parses the workspace.config file
@@ -54,6 +58,9 @@ func (p *Parser) ParseWorkspaceConfig(path string) error {
 		}
 
 		if comp != nil {
+			// Components from workspace.config are declared by the workspace itself
+			comp.DeclaredBy = "workspace.config"
+
 			if err := p.workspace.AddComponent(comp); err != nil {
 				return fmt.Errorf("line %d: %w", lineNum, err)
 			}
@@ -190,4 +197,69 @@ func inferVCS(compType component.ComponentType) string {
 	default:
 		return "svn" // Default to SVN
 	}
+}
+
+// ParseDependConfig parses a component's depend.config file and resolves dependencies
+// Returns a slice of dependency components found
+func (p *Parser) ParseDependConfig(parent *component.Component, dependConfigPath string) ([]*component.Component, error) {
+	// Check if we've already processed this component to avoid circular dependencies
+	if p.processed[parent.Name] {
+		return nil, nil // Already processed, skip
+	}
+	p.processed[parent.Name] = true
+
+	// Check if depend.config exists
+	if _, err := os.Stat(dependConfigPath); os.IsNotExist(err) {
+		return nil, nil // No dependencies
+	}
+
+	file, err := os.Open(dependConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open depend.config: %w", err)
+	}
+	defer file.Close()
+
+	var dependencies []*component.Component
+	scanner := bufio.NewScanner(file)
+	lineNum := 0
+
+	for scanner.Scan() {
+		lineNum++
+		line := strings.TrimSpace(scanner.Text())
+
+		// Skip empty lines and comments
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// Parse component declaration (same syntax as workspace.config)
+		comp, err := p.parseComponentLine(line)
+		if err != nil {
+			return nil, fmt.Errorf("line %d: %w", lineNum, err)
+		}
+
+		if comp != nil {
+			// Set the DeclaredBy field to track where this dependency came from
+			comp.DeclaredBy = parent.Name
+
+			// Add component to workspace (with conflict detection)
+			if err := p.workspace.AddComponent(comp); err != nil {
+				// Check if it's a branch conflict
+				if conflictErr, ok := err.(*component.BranchConflictError); ok {
+					return nil, fmt.Errorf("dependency conflict: %w", conflictErr)
+				}
+				return nil, err
+			}
+
+			// Add to parent's dependencies
+			parent.Dependencies = append(parent.Dependencies, comp)
+			dependencies = append(dependencies, comp)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	return dependencies, nil
 }

@@ -1,5 +1,7 @@
 package component
 
+import "strings"
+
 // ComponentType represents the type of a component
 type ComponentType string
 
@@ -23,7 +25,8 @@ type Component struct {
 	Dependencies []*Component
 
 	// For tracking conflicts
-	Resolved bool
+	Resolved   bool
+	DeclaredBy string // Name of component that declared this dependency (for conflict reporting)
 }
 
 // Workspace represents the entire workspace configuration
@@ -49,12 +52,21 @@ func (w *Workspace) AddComponent(comp *Component) error {
 		// Component already exists, check for branch conflicts
 		if existing.Branch != comp.Branch {
 			return &BranchConflictError{
-				Component: comp.Name,
-				Existing:  existing.Branch,
-				New:       comp.Branch,
+				Component:      comp.Name,
+				Existing:       existing.Branch,
+				ExistingSource: existing.DeclaredBy,
+				New:            comp.Branch,
+				NewSource:      comp.DeclaredBy,
 			}
 		}
-		// Same branch, no conflict
+		// Same branch, no conflict - but update DeclaredBy to include both sources if different
+		if comp.DeclaredBy != "" && existing.DeclaredBy != comp.DeclaredBy {
+			if existing.DeclaredBy == "" {
+				existing.DeclaredBy = comp.DeclaredBy
+			} else if !strings.Contains(existing.DeclaredBy, comp.DeclaredBy) {
+				existing.DeclaredBy = existing.DeclaredBy + ", " + comp.DeclaredBy
+			}
+		}
 		return nil
 	}
 
@@ -71,11 +83,24 @@ func (w *Workspace) GetComponent(name string) (*Component, bool) {
 
 // BranchConflictError represents a branch mismatch error
 type BranchConflictError struct {
-	Component string
-	Existing  string
-	New       string
+	Component       string
+	Existing        string
+	ExistingSource  string
+	New             string
+	NewSource       string
 }
 
 func (e *BranchConflictError) Error() string {
-	return "branch mismatch for " + e.Component + ": " + e.Existing + " vs " + e.New
+	msg := "branch mismatch for component '" + e.Component + "'\n"
+	if e.ExistingSource != "" {
+		msg += "  First declared by: " + e.ExistingSource + " requesting '" + e.Existing + "'\n"
+	} else {
+		msg += "  First declared: '" + e.Existing + "'\n"
+	}
+	if e.NewSource != "" {
+		msg += "  Also declared by: " + e.NewSource + " requesting '" + e.New + "'"
+	} else {
+		msg += "  Also declared: '" + e.New + "'"
+	}
+	return msg
 }

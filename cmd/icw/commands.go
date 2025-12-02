@@ -103,10 +103,31 @@ func runUpdate() error {
 		color.Cyan("  (from workspace.config)")
 	}
 
-	// Checkout/update each component
-	for name, comp := range ws.Components {
+	// Collect components to process (including dependencies)
+	// We'll use a queue to process components in order
+	processQueue := make([]*component.Component, 0)
+	for _, comp := range ws.Components {
+		processQueue = append(processQueue, comp)
+	}
+
+	// Track components we've already checked out to avoid duplicates
+	checkedOut := make(map[string]bool)
+
+	// Process components from the queue
+	for len(processQueue) > 0 {
+		// Pop from front of queue
+		comp := processQueue[0]
+		processQueue = processQueue[1:]
+
+		// Skip if already processed
+		if checkedOut[comp.Name] {
+			continue
+		}
+		checkedOut[comp.Name] = true
+
+		// Skip local references
 		if comp.VCS == "local" {
-			color.Blue("  [SKIP] %s (local reference)", name)
+			color.Blue("  [SKIP] %s (local reference)", comp.Name)
 			continue
 		}
 
@@ -115,13 +136,13 @@ func runUpdate() error {
 		if comp.VCS == "svn" {
 			// Check if already checked out
 			if svn.IsWorkingCopy(destPath) {
-				color.Yellow("  [UPDATE] %s (%s)", name, comp.Branch)
+				color.Yellow("  [UPDATE] %s (%s)", comp.Name, comp.Branch)
 				if err := svnClient.Update(destPath); err != nil {
 					color.Red("    Failed: %v", err)
 					continue
 				}
 			} else {
-				color.Green("  [CHECKOUT] %s (%s)", name, comp.Branch)
+				color.Green("  [CHECKOUT] %s (%s)", comp.Name, comp.Branch)
 				// Create parent directory if needed
 				parentDir := filepath.Dir(destPath)
 				if err := os.MkdirAll(parentDir, 0755); err != nil {
@@ -134,12 +155,35 @@ func runUpdate() error {
 					continue
 				}
 			}
+
+			// Now check for depend.config and process dependencies
+			dependConfigPath := filepath.Join(destPath, "depend.config")
+			dependencies, err := parser.ParseDependConfig(comp, dependConfigPath)
+			if err != nil {
+				// Check if it's a conflict error
+				if strings.Contains(err.Error(), "dependency conflict") || strings.Contains(err.Error(), "branch mismatch") {
+					color.Red("    ERROR: %v", err)
+					return fmt.Errorf("version conflict detected: %w", err)
+				}
+				color.Red("    Warning: Failed to parse dependencies: %v", err)
+				continue
+			}
+
+			// Add dependencies to the process queue
+			if len(dependencies) > 0 {
+				color.Cyan("    Found %d dependencies", len(dependencies))
+				for _, dep := range dependencies {
+					processQueue = append(processQueue, dep)
+				}
+			}
+
 		} else if comp.VCS == "git" {
-			color.Yellow("  [TODO] %s (git support not yet implemented)", name)
+			color.Yellow("  [TODO] %s (git support not yet implemented)", comp.Name)
 		}
 	}
 
 	color.Green("\nUpdate complete!")
+	color.Green("Processed %d component(s) total", len(checkedOut))
 	return nil
 }
 
