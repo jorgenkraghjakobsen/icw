@@ -53,10 +53,23 @@ func CreateWorkspaceConfig(dir string) error {
 # ICW Workspace Configuration
 ################################################################################
 #
-# REQUIRED: Set environment variable before running icw:
-#   export ICW_REPO=your_repo_name
+# Repository Configuration:
+#   set repo "your_repo_name"                    # Repository name (required)
+#   set svn_url "svn://custom-server.com"        # Custom SVN server (optional)
 #
-# Syntax:
+# Alternatively, use environment variables:
+#   export ICW_REPO=your_repo_name
+#   export ICW_SVN_URL=svn://custom-server.com
+#
+# Note: Environment variables override workspace.config settings
+#
+################################################################################
+# Set your repository (uncomment and edit):
+# set repo "icworks"
+#
+################################################################################
+#
+# Component Syntax:
 #   use component("path/to/component", "type", "branch")
 #   use component("path/to/component", "type")          # defaults to trunk
 #   use component("path/to/component")                  # infers type from path

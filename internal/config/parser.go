@@ -13,6 +13,8 @@ import (
 // Parser handles parsing of workspace.config and depend.config files
 type Parser struct {
 	workspace *component.Workspace
+	Repo      string // Repository name from config file
+	SvnURL    string // SVN URL from config file
 }
 
 // NewParser creates a new config parser
@@ -40,6 +42,11 @@ func (p *Parser) ParseWorkspaceConfig(path string) error {
 			continue
 		}
 
+		// Check for repository configuration
+		if p.parseRepoConfig(line) {
+			continue
+		}
+
 		// Parse component declaration
 		comp, err := p.parseComponentLine(line)
 		if err != nil {
@@ -54,6 +61,26 @@ func (p *Parser) ParseWorkspaceConfig(path string) error {
 	}
 
 	return scanner.Err()
+}
+
+// parseRepoConfig parses repository configuration directives
+// Returns true if the line was a config directive
+func (p *Parser) parseRepoConfig(line string) bool {
+	// Pattern for: set repo "repo_name"
+	repoPattern := regexp.MustCompile(`set\s+repo\s+"([^"]+)"`)
+	if matches := repoPattern.FindStringSubmatch(line); matches != nil {
+		p.Repo = matches[1]
+		return true
+	}
+
+	// Pattern for: set svn_url "svn://server"
+	urlPattern := regexp.MustCompile(`set\s+svn_url\s+"([^"]+)"`)
+	if matches := urlPattern.FindStringSubmatch(line); matches != nil {
+		p.SvnURL = matches[1]
+		return true
+	}
+
+	return false
 }
 
 // parseComponentLine parses a single line from the config file
