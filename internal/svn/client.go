@@ -102,6 +102,21 @@ func (c *Client) Info(path string) (string, error) {
 	return string(output), nil
 }
 
+// Cat reads a file directly from the repository without checking it out
+func (c *Client) Cat(componentPath, branch, filename string) (string, error) {
+	// Construct URL to the file in the repository
+	url := fmt.Sprintf("%s/%s/components/%s/%s/%s", c.URL, c.Repo, componentPath, branch, filename)
+
+	cmd := exec.Command("svn", "cat", url, "--username", c.Username)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// File might not exist, which is OK for depend.config
+		return "", fmt.Errorf("svn cat failed: %w", err)
+	}
+
+	return string(output), nil
+}
+
 // Add adds a new component to SVN
 func (c *Client) Add(componentPath, componentType string) error {
 	// Create directory structure in SVN

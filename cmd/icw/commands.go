@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/fatih/color"
 	"github.com/jakobsen/icw/internal/component"
 	"github.com/jakobsen/icw/internal/config"
+	"github.com/jakobsen/icw/internal/hdl"
 	"github.com/jakobsen/icw/internal/svn"
 	"github.com/jakobsen/icw/internal/version"
 	"github.com/spf13/cobra"
@@ -18,6 +20,7 @@ func init() {
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(treeCmd)
+	rootCmd.AddCommand(hdlCmd)
 	rootCmd.AddCommand(addCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(testCmd)
@@ -192,19 +195,25 @@ var statusCmd = &cobra.Command{
 	Aliases: []string{"st"},
 	Short:   "Show status between workspace and repository",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		color.Green("Running status command...")
-		// TODO: Implement status logic
-		return fmt.Errorf("not yet implemented")
+		return runStatus()
 	},
 }
 
 var treeCmd = &cobra.Command{
 	Use:   "tree",
-	Short: "Display dependency tree with HDL files",
+	Short: "Display dependency tree from config files",
+	Long:  `Display component dependency tree showing workspace structure and component relationships based on workspace.config and depend.config files.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		color.Green("Running tree command...")
-		// TODO: Implement tree logic
-		return fmt.Errorf("not yet implemented")
+		return runTree()
+	},
+}
+
+var hdlCmd = &cobra.Command{
+	Use:   "hdl",
+	Short: "Display dependency tree with HDL files",
+	Long:  `Display component dependency tree with detailed HDL file listings, categorized by type (package, rtl, behav).`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runHdl()
 	},
 }
 
@@ -562,6 +571,324 @@ func showMatchingComponents(svnClient *svn.Client, pattern string, showBranches,
 		if err := showComponentDetails(svnClient, comp, showBranches, showTags, showAll); err != nil {
 			color.Red("Error getting details for %s: %v", comp, err)
 		}
+	}
+
+	return nil
+}
+
+func runTree() error {
+	// Find workspace root
+	root, err := config.FindWorkspaceRoot()
+	if err != nil {
+		return fmt.Errorf("not in a workspace: %w", err)
+	}
+
+	// Create workspace
+	ws := component.NewWorkspace(root)
+
+	// Parse workspace.config
+	parser := config.NewParser(ws)
+	if err := parser.ParseWorkspaceConfig(ws.Config); err != nil {
+		return fmt.Errorf("failed to parse workspace.config: %w", err)
+	}
+
+	// Check if we have any components
+	if len(ws.Components) == 0 {
+		color.Yellow("No components defined in workspace.config")
+		return nil
+	}
+
+	// Create SVN client for fetching depend.config from repository
+	svnClient, err := svn.NewClientWithConfig(parser.Repo, parser.SvnURL)
+	if err != nil {
+		return fmt.Errorf("failed to create SVN client: %w", err)
+	}
+
+	// Print dependency tree
+	color.Cyan("Dependency tree for workspace\n")
+
+	// Print each top-level component from workspace.config
+	for _, comp := range ws.Components {
+		printComponentTreeFromConfigs(comp, root, svnClient, 0)
+	}
+
+	return nil
+}
+
+func runHdl() error {
+	// Find workspace root
+	root, err := config.FindWorkspaceRoot()
+	if err != nil {
+		return fmt.Errorf("not in a workspace: %w", err)
+	}
+
+	// Create workspace
+	ws := component.NewWorkspace(root)
+
+	// Parse workspace.config
+	parser := config.NewParser(ws)
+	if err := parser.ParseWorkspaceConfig(ws.Config); err != nil {
+		return fmt.Errorf("failed to parse workspace.config: %w", err)
+	}
+
+	// Check if we have any components
+	if len(ws.Components) == 0 {
+		color.Yellow("No components defined in workspace.config")
+		return nil
+	}
+
+	// Load all dependencies
+	for _, comp := range ws.Components {
+		if comp.VCS == "local" {
+			continue
+		}
+		destPath := filepath.Join(root, comp.Path)
+		dependConfigPath := filepath.Join(destPath, "depend.config")
+		parser.ParseDependConfig(comp, dependConfigPath)
+	}
+
+	// Print dependency tree with HDL files
+	color.Cyan("Dependency tree with HDL files\n")
+
+	// Track which components we've already printed to avoid duplicates
+	printed := make(map[string]bool)
+
+	// Print each top-level component and its dependencies
+	for _, comp := range ws.Components {
+		printComponentTreeWithHDL(comp, root, 0, printed)
+	}
+
+	return nil
+}
+
+func printComponentTreeFromConfigs(comp *component.Component, workspaceRoot string, svnClient *svn.Client, indent int) {
+	// Print component info
+	indentStr := strings.Repeat(" ", indent)
+	fmt.Printf("%s%s (%s) [%s]\n", indentStr, comp.Name, comp.Branch, comp.Type)
+
+	// Skip if local reference - no depend.config to parse
+	if comp.VCS == "local" {
+		return
+	}
+
+	// Try to read depend.config - first from local checkout, then from SVN
+	var dependConfigContent string
+	var err error
+
+	// Check if component is checked out locally
+	componentPath := filepath.Join(workspaceRoot, comp.Path)
+	dependConfigPath := filepath.Join(componentPath, "depend.config")
+
+	if _, statErr := os.Stat(dependConfigPath); statErr == nil {
+		// Component is checked out, read from local filesystem
+		content, readErr := os.ReadFile(dependConfigPath)
+		if readErr == nil {
+			dependConfigContent = string(content)
+		} else {
+			err = readErr
+		}
+	} else {
+		// Component not checked out, fetch from SVN repository
+		dependConfigContent, err = svnClient.Cat(comp.Path, comp.Branch, "depend.config")
+	}
+
+	if err != nil {
+		// No depend.config or error reading it - that's OK, component has no dependencies
+		return
+	}
+
+	// Parse depend.config content
+	dependencies := parseDependConfigContentForTree(dependConfigContent)
+
+	// Recursively print each dependency
+	for _, dep := range dependencies {
+		printComponentTreeFromConfigs(dep, workspaceRoot, svnClient, indent+2)
+	}
+}
+
+func parseDependConfigContentForTree(content string) []*component.Component {
+	var dependencies []*component.Component
+
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+
+		// Skip empty lines and comments
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// Parse component line - use simple parsing
+		comp := parseComponentLineSimple(line)
+		if comp != nil {
+			dependencies = append(dependencies, comp)
+		}
+	}
+
+	return dependencies
+}
+
+func parseComponentLineSimple(line string) *component.Component {
+	// Match: use component("path", "type", "branch")
+	re := regexp.MustCompile(`use\s+component\s*\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)`)
+	if matches := re.FindStringSubmatch(line); matches != nil {
+		return &component.Component{
+			Name:   matches[1],
+			Path:   matches[1],
+			Type:   component.ComponentType(matches[2]),
+			Branch: matches[3],
+			VCS:    "svn",
+		}
+	}
+
+	// Match: use component("path", "type")
+	re = regexp.MustCompile(`use\s+component\s*\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)`)
+	if matches := re.FindStringSubmatch(line); matches != nil {
+		return &component.Component{
+			Name:   matches[1],
+			Path:   matches[1],
+			Type:   component.ComponentType(matches[2]),
+			Branch: "trunk",
+			VCS:    "svn",
+		}
+	}
+
+	// Match: use ref("path")
+	re = regexp.MustCompile(`use\s+ref\s*\(\s*"([^"]+)"\s*\)`)
+	if matches := re.FindStringSubmatch(line); matches != nil {
+		return &component.Component{
+			Name:   matches[1],
+			Path:   matches[1],
+			Type:   component.TypeDigital, // Default
+			Branch: "local",
+			VCS:    "local",
+		}
+	}
+
+	return nil
+}
+
+func printComponentTreeWithHDL(comp *component.Component, workspaceRoot string, indent int, printed map[string]bool) {
+	// Skip if already printed
+	if printed[comp.Name] {
+		return
+	}
+	printed[comp.Name] = true
+
+	// Print component info
+	indentStr := strings.Repeat(" ", indent)
+	fmt.Printf("%s%s (%s), %s\n", indentStr, comp.Name, comp.Path, comp.Branch)
+
+	// Only discover HDL files for digital components
+	if comp.Type == component.TypeDigital && comp.VCS != "local" {
+		componentPath := filepath.Join(workspaceRoot, comp.Path)
+		hdlFiles, err := hdl.DiscoverFiles(componentPath)
+		if err == nil {
+			// Print package files
+			if len(hdlFiles.Package) > 0 {
+				fileList := shortenPaths(hdlFiles.Package, workspaceRoot)
+				fmt.Printf("%s  - package: %s\n", indentStr, strings.Join(fileList, " "))
+			}
+
+			// Print RTL files
+			if len(hdlFiles.RTL) > 0 {
+				fileList := shortenPaths(hdlFiles.RTL, workspaceRoot)
+				fmt.Printf("%s  - rtl: %s\n", indentStr, strings.Join(fileList, " "))
+			}
+
+			// Print behavioral files
+			if len(hdlFiles.Behav) > 0 {
+				fileList := shortenPaths(hdlFiles.Behav, workspaceRoot)
+				fmt.Printf("%s  - behav: %s\n", indentStr, strings.Join(fileList, " "))
+			}
+		}
+	}
+
+	// Recursively print dependencies
+	for _, dep := range comp.Dependencies {
+		printComponentTreeWithHDL(dep, workspaceRoot, indent+2, printed)
+	}
+}
+
+func shortenPaths(paths []string, workspaceRoot string) []string {
+	shortened := make([]string, len(paths))
+	for i, path := range paths {
+		// Replace workspace root with "..."
+		shortened[i] = strings.Replace(path, workspaceRoot, "...", 1)
+	}
+	return shortened
+}
+
+func runStatus() error {
+	// Find workspace root
+	root, err := config.FindWorkspaceRoot()
+	if err != nil {
+		return fmt.Errorf("not in a workspace: %w", err)
+	}
+
+	// Create workspace
+	ws := component.NewWorkspace(root)
+
+	// Parse workspace.config
+	parser := config.NewParser(ws)
+	if err := parser.ParseWorkspaceConfig(ws.Config); err != nil {
+		return fmt.Errorf("failed to parse workspace.config: %w", err)
+	}
+
+	// Check if we have any components
+	if len(ws.Components) == 0 {
+		color.Yellow("No components defined in workspace.config")
+		return nil
+	}
+
+	// Create SVN client
+	svnClient, err := svn.NewClientWithConfig(parser.Repo, parser.SvnURL)
+	if err != nil {
+		return fmt.Errorf("failed to create SVN client: %w", err)
+	}
+
+	color.Cyan("Workspace status:\n")
+
+	// Check each component
+	hasChanges := false
+	for _, comp := range ws.Components {
+		if comp.VCS == "local" {
+			continue
+		}
+
+		destPath := filepath.Join(root, comp.Path)
+
+		// Check if component is checked out
+		if !svn.IsWorkingCopy(destPath) {
+			color.Yellow("[NOT CHECKED OUT] %s", comp.Name)
+			hasChanges = true
+			continue
+		}
+
+		// Get SVN status
+		status, err := svnClient.Status(destPath)
+		if err != nil {
+			color.Red("[ERROR] %s: %v", comp.Name, err)
+			continue
+		}
+
+		// Check if there are any changes
+		if strings.TrimSpace(status) != "" {
+			color.Yellow("[MODIFIED] %s (%s)", comp.Name, comp.Branch)
+			// Print the status with indentation
+			lines := strings.Split(strings.TrimSpace(status), "\n")
+			for _, line := range lines {
+				fmt.Printf("  %s\n", line)
+			}
+			hasChanges = true
+		} else {
+			color.Green("[CLEAN] %s (%s)", comp.Name, comp.Branch)
+		}
+	}
+
+	if !hasChanges {
+		fmt.Println()
+		color.Green("Workspace is clean - no changes detected")
 	}
 
 	return nil

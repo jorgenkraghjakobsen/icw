@@ -8,7 +8,7 @@ CMD_DIR=cmd/icw
 # Version info
 VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT=$(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-BUILD_DATE=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+BUILD_DATE=$(shell date +%Y-%m-%dT%H:%M:%S%z)
 LDFLAGS=-ldflags "-s -w \
 	-X github.com/jakobsen/icw/internal/version.Version=$(VERSION) \
 	-X github.com/jakobsen/icw/internal/version.Commit=$(COMMIT) \
