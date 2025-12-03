@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/jakobsen/icw/internal/auth"
 )
 
 // Client represents an SVN client
@@ -12,6 +14,16 @@ type Client struct {
 	URL      string // Base SVN URL (e.g., svn://anyvej11.dk)
 	Repo     string // Repository name (from ICW_REPO env var)
 	Username string // SVN username
+	Password string // SVN password (from ICW_SVN_PASSWORD env var, optional)
+}
+
+// buildAuthArgs returns common authentication arguments for svn commands
+func (c *Client) buildAuthArgs() []string {
+	args := []string{"--username", c.Username, "--non-interactive", "--trust-server-cert"}
+	if c.Password != "" {
+		args = append(args, "--password", c.Password)
+	}
+	return args
 }
 
 // NewClient creates a new SVN client
@@ -35,7 +47,15 @@ func NewClientWithConfig(repo, svnURL string) (*Client, error) {
 		svnURL = os.Getenv("ICW_SVN_URL")
 	}
 	if svnURL == "" {
-		svnURL = "svn://anyvej11.dk"
+		// Auto-detect SVN URL based on hostname
+		hostname, err := os.Hostname()
+		if err == nil && hostname == "g9" {
+			// On g9 server, use local svnserve
+			svnURL = "svn://g9"
+		} else {
+			// Default to remote server
+			svnURL = "svn://anyvej11.dk"
+		}
 	}
 
 	username := os.Getenv("USER")
@@ -43,10 +63,17 @@ func NewClientWithConfig(repo, svnURL string) (*Client, error) {
 		username = "anonymous"
 	}
 
+	// Get password from multiple sources (env var, stored credentials)
+	password, err := auth.GetPassword()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get credentials: %w", err)
+	}
+
 	return &Client{
 		URL:      svnURL,
 		Repo:     repo,
 		Username: username,
+		Password: password,
 	}, nil
 }
 
@@ -107,7 +134,8 @@ func (c *Client) Cat(componentPath, branch, filename string) (string, error) {
 	// Construct URL to the file in the repository
 	url := fmt.Sprintf("%s/%s/components/%s/%s/%s", c.URL, c.Repo, componentPath, branch, filename)
 
-	cmd := exec.Command("svn", "cat", url, "--username", c.Username)
+	args := append([]string{"cat", url}, c.buildAuthArgs()...)
+	cmd := exec.Command("svn", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		// File might not exist, which is OK for depend.config
@@ -183,7 +211,9 @@ func (c *Client) GetBranch(path string) (string, error) {
 func (c *Client) TestConnection() error {
 	// Try to list the repository root
 	repoURL := fmt.Sprintf("%s/%s", c.URL, c.Repo)
-	cmd := exec.Command("svn", "list", repoURL, "--username", c.Username, "--depth", "immediates")
+	args := append([]string{"list", repoURL}, c.buildAuthArgs()...)
+	args = append(args, "--depth", "immediates")
+	cmd := exec.Command("svn", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to connect to %s: %w\n%s", repoURL, err, output)
@@ -195,7 +225,8 @@ func (c *Client) TestConnection() error {
 // ListComponents lists available components in the repository
 func (c *Client) ListComponents() ([]string, error) {
 	componentsURL := fmt.Sprintf("%s/%s/components", c.URL, c.Repo)
-	cmd := exec.Command("svn", "list", componentsURL, "--username", c.Username)
+	args := append([]string{"list", componentsURL}, c.buildAuthArgs()...)
+	cmd := exec.Command("svn", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list components: %w\n%s", err, output)
@@ -217,7 +248,9 @@ func (c *Client) ListComponents() ([]string, error) {
 // ListComponentsByType lists components of a specific type (analog, digital, setup, process)
 func (c *Client) ListComponentsByType(componentType string) ([]string, error) {
 	typeURL := fmt.Sprintf("%s/%s/components/%s", c.URL, c.Repo, componentType)
-	cmd := exec.Command("svn", "list", typeURL, "--username", c.Username, "--depth", "infinity")
+	args := append([]string{"list", typeURL}, c.buildAuthArgs()...)
+	args = append(args, "--depth", "infinity")
+	cmd := exec.Command("svn", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list %s components: %w\n%s", componentType, err, output)
@@ -243,7 +276,8 @@ func (c *Client) ListComponentsByType(componentType string) ([]string, error) {
 // ListBranches lists all branches for a component
 func (c *Client) ListBranches(componentPath string) ([]string, error) {
 	branchesURL := fmt.Sprintf("%s/%s/components/%s/branches", c.URL, c.Repo, componentPath)
-	cmd := exec.Command("svn", "list", branchesURL, "--username", c.Username)
+	args := append([]string{"list", branchesURL}, c.buildAuthArgs()...)
+	cmd := exec.Command("svn", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list branches: %w\n%s", err, output)
@@ -265,7 +299,8 @@ func (c *Client) ListBranches(componentPath string) ([]string, error) {
 // ListTags lists all tags for a component
 func (c *Client) ListTags(componentPath string) ([]string, error) {
 	tagsURL := fmt.Sprintf("%s/%s/components/%s/tags", c.URL, c.Repo, componentPath)
-	cmd := exec.Command("svn", "list", tagsURL, "--username", c.Username)
+	args := append([]string{"list", tagsURL}, c.buildAuthArgs()...)
+	cmd := exec.Command("svn", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list tags: %w\n%s", err, output)
@@ -300,7 +335,9 @@ func (c *Client) GetComponentInfo(componentPath string) (*ComponentInfo, error) 
 
 	// Check if trunk exists
 	trunkURL := fmt.Sprintf("%s/%s/components/%s/trunk", c.URL, c.Repo, componentPath)
-	cmd := exec.Command("svn", "list", trunkURL, "--username", c.Username, "--depth", "empty")
+	args := append([]string{"list", trunkURL}, c.buildAuthArgs()...)
+	args = append(args, "--depth", "empty")
+	cmd := exec.Command("svn", args...)
 	if err := cmd.Run(); err == nil {
 		info.HasTrunk = true
 	}

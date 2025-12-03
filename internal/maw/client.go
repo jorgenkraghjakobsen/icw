@@ -39,22 +39,26 @@ func (c *Client) CreateRepo(repoName string) error {
 		return fmt.Errorf("repository %s already exists", repoName)
 	}
 
-	// Create repository using svnadmin
-	cmd := exec.Command("svnadmin", "create", repoName)
-	cmd.Dir = c.repoPath
-	if err := cmd.Run(); err != nil {
+	// Check if we have write permissions to the repos directory
+	if _, err := os.Stat(c.repoPath); err != nil {
+		return fmt.Errorf("cannot access repository directory %s: %w", c.repoPath, err)
+	}
+
+	// Create repository using svnadmin with sudo (repos directory is owned by root)
+	cmd := exec.Command("sudo", "svnadmin", "create", repoFullPath)
+
+	// Capture both stdout and stderr for better error messages
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if len(output) > 0 {
+			return fmt.Errorf("failed to create repository: %w\nOutput: %s", err, strings.TrimSpace(string(output)))
+		}
 		return fmt.Errorf("failed to create repository: %w", err)
 	}
 
-	// Write svnserve.conf
+	// Write svnserve.conf using sudo (since we created the repo with sudo)
 	svnConf := fmt.Sprintf("%s/conf/svnserve.conf", repoFullPath)
-	f, err := os.Create(svnConf)
-	if err != nil {
-		return fmt.Errorf("failed to create svnserve.conf: %w", err)
-	}
-	defer f.Close()
-
-	_, err = fmt.Fprintf(f, `[general]
+	confContent := fmt.Sprintf(`[general]
 realm = %s
 anon-access = none
 auth-access = write
@@ -62,8 +66,13 @@ auth-access = write
 [sasl]
 use-sasl = true
 `, repoName)
+
+	// Use sudo to write the config file
+	cmd = exec.Command("sudo", "tee", svnConf)
+	cmd.Stdin = strings.NewReader(confContent)
+	output, err = cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to write svnserve.conf: %w", err)
+		return fmt.Errorf("failed to write svnserve.conf: %w\nOutput: %s", err, strings.TrimSpace(string(output)))
 	}
 
 	return nil
@@ -100,9 +109,9 @@ func (c *Client) ListRepoUsers(repoName string) ([]string, error) {
 	}
 
 	cmd := exec.Command("sasldblistusers2", "-f", c.sasldbPath)
-	output, err := cmd.Output()
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("failed to list users: %w", err)
+		return nil, fmt.Errorf("failed to list users: %w\nOutput: %s", err, strings.TrimSpace(string(output)))
 	}
 
 	// Parse output and filter by repo
@@ -131,8 +140,9 @@ func (c *Client) AddUserToRepo(repo, username, password string) error {
 	cmd := exec.Command("sudo", "saslpasswd2", "-c", "-f", c.sasldbPath, "-u", repo, username)
 	cmd.Stdin = strings.NewReader(password + "\n")
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to add user to repo: %w", err)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to add user to repo: %w\nOutput: %s", err, strings.TrimSpace(string(output)))
 	}
 
 	return nil
@@ -145,8 +155,9 @@ func (c *Client) RemoveUserFromRepo(repo, username string) error {
 	}
 
 	cmd := exec.Command("sudo", "saslpasswd2", "-d", "-f", c.sasldbPath, "-u", repo, username)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to remove user from repo: %w", err)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to remove user from repo: %w\nOutput: %s", err, strings.TrimSpace(string(output)))
 	}
 
 	return nil
@@ -166,16 +177,18 @@ func (c *Client) DeleteRepo(repoName string) error {
 		return fmt.Errorf("failed to create archive directory: %w", err)
 	}
 
-	// Archive repository
-	cmd := exec.Command("cp", "-r", repoFullPath, archivePath+"/"+repoName)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to archive repository: %w", err)
+	// Archive repository using sudo
+	cmd := exec.Command("sudo", "cp", "-r", repoFullPath, archivePath+"/"+repoName)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to archive repository: %w\nOutput: %s", err, strings.TrimSpace(string(output)))
 	}
 
-	// Remove repository
-	cmd = exec.Command("rm", "-rf", repoFullPath)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to remove repository: %w", err)
+	// Remove repository using sudo
+	cmd = exec.Command("sudo", "rm", "-rf", repoFullPath)
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to remove repository: %w\nOutput: %s", err, strings.TrimSpace(string(output)))
 	}
 
 	return nil

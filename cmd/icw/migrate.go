@@ -32,6 +32,7 @@ var (
 	flagCreateRepo string
 	flagFromRepo   string
 	flagToRepo     string
+	flagAddUser    string
 	flagDryRun     bool
 )
 
@@ -39,6 +40,7 @@ func init() {
 	migrateCmd.Flags().StringVar(&flagCreateRepo, "create-repo", "", "Create a new repository")
 	migrateCmd.Flags().StringVar(&flagFromRepo, "from", "", "Source repository")
 	migrateCmd.Flags().StringVar(&flagToRepo, "to", "", "Target repository")
+	migrateCmd.Flags().StringVar(&flagAddUser, "add-user", "", "Add user to repository (use with --to)")
 	migrateCmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "Show what would be done without doing it")
 }
 
@@ -47,6 +49,14 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	mawClient, err := maw.NewClient()
 	if err != nil {
 		return fmt.Errorf("MAW client error: %w\nNote: MAW operations must run on g9 server", err)
+	}
+
+	// If --add-user is specified, add user to repository
+	if flagAddUser != "" {
+		if flagToRepo == "" {
+			return fmt.Errorf("--add-user requires --to <repository>")
+		}
+		return addUserToRepository(mawClient, flagAddUser, flagToRepo)
 	}
 
 	// If only --create-repo is specified, just create the repo
@@ -142,6 +152,38 @@ func runInteractiveMigration(mawClient *maw.Client) error {
 	color.Yellow("Usage:")
 	fmt.Println("  icw migrate --create-repo <name>              Create new repository")
 	fmt.Println("  icw migrate --from <source> --to <target>     Full migration")
+
+	return nil
+}
+
+func addUserToRepository(mawClient *maw.Client, username, repoName string) error {
+	// Verify repository exists
+	if !mawClient.RepoExists(repoName) {
+		return fmt.Errorf("repository %s does not exist", repoName)
+	}
+
+	color.Cyan("Adding user to repository...")
+	color.Cyan("  User: %s", username)
+	color.Cyan("  Repository: %s", repoName)
+	fmt.Println()
+
+	// Prompt for password
+	fmt.Print("Enter password for user: ")
+	var password string
+	fmt.Scanln(&password)
+
+	if password == "" {
+		return fmt.Errorf("password cannot be empty")
+	}
+
+	// Add user
+	if err := mawClient.AddUserToRepo(repoName, username, password); err != nil {
+		return fmt.Errorf("failed to add user: %w", err)
+	}
+
+	color.Green("✓ User %s added to repository %s", username, repoName)
+	color.Cyan("\nThe user can now access the repository:")
+	color.Cyan("  svn checkout svn://g9/%s/<path> --username %s", repoName, username)
 
 	return nil
 }

@@ -26,12 +26,14 @@ func init() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(testCmd)
 	rootCmd.AddCommand(listCmd)
+	rootCmd.AddCommand(authCmd)
 
 	// Add flags for list command
 	listCmd.Flags().StringP("type", "t", "", "Filter by component type (analog, digital, setup, process)")
 	listCmd.Flags().BoolP("branches", "b", false, "Show branches for component")
 	listCmd.Flags().BoolP("tags", "g", false, "Show tags for component")
 	listCmd.Flags().BoolP("all", "a", false, "Show all details (branches and tags)")
+	listCmd.Flags().StringP("repo", "r", "", "Repository to list from (overrides ICW_REPO/workspace.config)")
 }
 
 var versionCmd = &cobra.Command{
@@ -381,6 +383,8 @@ var listCmd = &cobra.Command{
 Examples:
   icw list                       # List all components
   icw list -t digital            # List only digital components
+  icw list -r cp3                # List components from cp3 repository
+  icw list -r cp4 -t analog      # List analog components from cp4
   icw list digital/my_module     # Show details for specific component
   icw list digital/my_module -b  # Show branches only
   icw list digital/my_module -g  # Show tags only
@@ -398,16 +402,24 @@ func runList(cmd *cobra.Command, args []string) error {
 	showBranches, _ := cmd.Flags().GetBool("branches")
 	showTags, _ := cmd.Flags().GetBool("tags")
 	showAll, _ := cmd.Flags().GetBool("all")
+	repoFlag, _ := cmd.Flags().GetString("repo")
 
-	// Try to read workspace.config for repo configuration
+	// Determine which repository to use
 	var configRepo, configURL string
-	root, err := config.FindWorkspaceRoot()
-	if err == nil {
-		ws := component.NewWorkspace(root)
-		parser := config.NewParser(ws)
-		if err := parser.ParseWorkspaceConfig(ws.Config); err == nil {
-			configRepo = parser.Repo
-			configURL = parser.SvnURL
+
+	if repoFlag != "" {
+		// Use repository specified via --repo flag
+		configRepo = repoFlag
+	} else {
+		// Try to read workspace.config for repo configuration
+		root, err := config.FindWorkspaceRoot()
+		if err == nil {
+			ws := component.NewWorkspace(root)
+			parser := config.NewParser(ws)
+			if err := parser.ParseWorkspaceConfig(ws.Config); err == nil {
+				configRepo = parser.Repo
+				configURL = parser.SvnURL
+			}
 		}
 	}
 

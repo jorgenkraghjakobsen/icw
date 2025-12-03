@@ -1,6 +1,8 @@
 module github.com/jakobsen/icw
 
-go 1.21.8
+go 1.24.0
+
+toolchain go1.24.11
 
 require (
 	github.com/fatih/color v1.18.0 // indirect
@@ -9,5 +11,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/spf13/cobra v1.10.1 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
-	golang.org/x/sys v0.25.0 // indirect
+	golang.org/x/sys v0.38.0 // indirect
+	golang.org/x/term v0.37.0 // indirect
 )
