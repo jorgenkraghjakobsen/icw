@@ -21,6 +21,7 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(treeCmd)
 	rootCmd.AddCommand(hdlCmd)
+	rootCmd.AddCommand(migrateCmd)
 	rootCmd.AddCommand(addCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(testCmd)
