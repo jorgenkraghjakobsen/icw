@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/jakobsen/icw/internal/auth"
@@ -83,7 +84,8 @@ func (c *Client) Checkout(componentPath, branch, destPath string) error {
 	svnURL := fmt.Sprintf("%s/%s/components/%s/%s", c.URL, c.Repo, componentPath, branch)
 
 	// Run svn checkout
-	cmd := exec.Command("svn", "checkout", svnURL, destPath, "--username", c.Username)
+	args := append([]string{"checkout", svnURL, destPath}, c.buildAuthArgs()...)
+	cmd := exec.Command("svn", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -96,7 +98,8 @@ func (c *Client) Checkout(componentPath, branch, destPath string) error {
 
 // Update updates an existing SVN working copy
 func (c *Client) Update(path string) error {
-	cmd := exec.Command("svn", "update", path, "--username", c.Username)
+	args := append([]string{"update", path}, c.buildAuthArgs()...)
+	cmd := exec.Command("svn", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -107,9 +110,27 @@ func (c *Client) Update(path string) error {
 	return nil
 }
 
+// Switch switches an existing working copy to a different branch/tag
+func (c *Client) Switch(localPath, componentPath, branch string) error {
+	// Build target URL
+	targetURL := fmt.Sprintf("%s/%s/components/%s/%s", c.URL, c.Repo, componentPath, branch)
+
+	args := append([]string{"switch", targetURL, localPath}, c.buildAuthArgs()...)
+	cmd := exec.Command("svn", args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("svn switch failed: %w", err)
+	}
+
+	return nil
+}
+
 // Status returns the status of a working copy
 func (c *Client) Status(path string) (string, error) {
-	cmd := exec.Command("svn", "status", path, "--username", c.Username)
+	args := append([]string{"status", path}, c.buildAuthArgs()...)
+	cmd := exec.Command("svn", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("svn status failed: %w", err)
@@ -120,7 +141,8 @@ func (c *Client) Status(path string) (string, error) {
 
 // Info returns information about a working copy or URL
 func (c *Client) Info(path string) (string, error) {
-	cmd := exec.Command("svn", "info", path, "--username", c.Username)
+	args := append([]string{"info", path}, c.buildAuthArgs()...)
+	cmd := exec.Command("svn", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("svn info failed: %w", err)
@@ -151,17 +173,161 @@ func (c *Client) Add(componentPath, componentType string) error {
 	mkdirURL := fmt.Sprintf("%s/%s/components/%s/%s", c.URL, c.Repo, componentType, componentPath)
 
 	// Create component directory structure (trunk, tags, branches)
-	cmd := exec.Command("svn", "mkdir",
+	// Use --parents to create intermediate directories if they don't exist
+	args := append([]string{"mkdir", "--parents",
 		mkdirURL,
-		mkdirURL+"/trunk",
-		mkdirURL+"/tags",
-		mkdirURL+"/branches",
-		"-m", fmt.Sprintf("Created component %s", componentPath),
-		"--username", c.Username)
+		mkdirURL + "/trunk",
+		mkdirURL + "/tags",
+		mkdirURL + "/branches",
+		"-m", fmt.Sprintf("Created component %s", componentPath)},
+		c.buildAuthArgs()...)
+	cmd := exec.Command("svn", args...)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("svn mkdir failed: %w\n%s", err, output)
+	}
+
+	return nil
+}
+
+// CreateComponentDirs creates the standard SVN directory structure for a component
+// (trunk, tags, branches) at the specified path
+func (c *Client) CreateComponentDirs(componentPath string) error {
+	// Build base URL for the component
+	baseURL := fmt.Sprintf("%s/%s/components/%s", c.URL, c.Repo, componentPath)
+
+	// Create component directory structure (trunk, tags, branches)
+	// Use --parents to create intermediate directories if they don't exist
+	args := append([]string{"mkdir", "--parents",
+		baseURL,
+		baseURL + "/trunk",
+		baseURL + "/tags",
+		baseURL + "/branches",
+		"-m", fmt.Sprintf("Created component structure for %s", componentPath)},
+		c.buildAuthArgs()...)
+	cmd := exec.Command("svn", args...)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("svn mkdir failed: %w\n%s", err, output)
+	}
+
+	return nil
+}
+
+// Import imports a local directory to SVN
+func (c *Client) Import(localPath, svnURL, commitMessage string) error {
+	args := append([]string{"import", localPath, svnURL, "-m", commitMessage},
+		c.buildAuthArgs()...)
+	cmd := exec.Command("svn", args...)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("svn import failed: %w\n%s", err, output)
+	}
+
+	return nil
+}
+
+// AddAll adds all files in a directory to SVN (recursively)
+func (c *Client) AddAll(path string) error {
+	// Read directory contents
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return fmt.Errorf("failed to read directory: %w", err)
+	}
+
+	// Build list of paths to add (skip .svn)
+	var pathsToAdd []string
+	for _, entry := range entries {
+		if entry.Name() == ".svn" {
+			continue
+		}
+		pathsToAdd = append(pathsToAdd, filepath.Join(path, entry.Name()))
+	}
+
+	if len(pathsToAdd) == 0 {
+		return nil // Nothing to add
+	}
+
+	// Add all paths in one command
+	args := append([]string{"add", "--force"}, pathsToAdd...)
+	args = append(args, c.buildAuthArgs()...)
+	cmd := exec.Command("svn", args...)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("svn add failed: %w\n%s", err, output)
+	}
+
+	return nil
+}
+
+// Commit commits changes in a working copy
+func (c *Client) Commit(path, message string) error {
+	args := append([]string{"commit", path, "-m", message}, c.buildAuthArgs()...)
+	cmd := exec.Command("svn", args...)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("svn commit failed: %w\n%s", err, output)
+	}
+
+	return nil
+}
+
+// TagExists checks if a release tag already exists for a component
+func (c *Client) TagExists(componentPath, tagName string) (bool, error) {
+	tagURL := fmt.Sprintf("%s/%s/components/%s/tags/%s", c.URL, c.Repo, componentPath, tagName)
+	args := append([]string{"list", tagURL, "--depth", "empty"}, c.buildAuthArgs()...)
+	cmd := exec.Command("svn", args...)
+
+	err := cmd.Run()
+	if err != nil {
+		// Exit status 1 means URL doesn't exist
+		return false, nil
+	}
+	return true, nil
+}
+
+// CreateTag creates a release tag by copying branch to tags/tagName
+func (c *Client) CreateTag(componentPath, branch, tagName, message string) error {
+	srcURL := fmt.Sprintf("%s/%s/components/%s/%s", c.URL, c.Repo, componentPath, branch)
+	dstURL := fmt.Sprintf("%s/%s/components/%s/tags/%s", c.URL, c.Repo, componentPath, tagName)
+
+	args := append([]string{"copy", "--parents", "-m", message, srcURL, dstURL}, c.buildAuthArgs()...)
+	cmd := exec.Command("svn", args...)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("svn copy failed: %w\n%s", err, output)
+	}
+
+	return nil
+}
+
+// DeleteFile deletes a file from the repository (URL operation)
+func (c *Client) DeleteFile(fileURL, message string) error {
+	args := append([]string{"delete", "-m", message, fileURL}, c.buildAuthArgs()...)
+	cmd := exec.Command("svn", args...)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("svn delete failed: %w\n%s", err, output)
+	}
+
+	return nil
+}
+
+// ImportFile imports a single file to the repository URL
+func (c *Client) ImportFile(localPath, destURL, message string) error {
+	args := append([]string{"import", "-m", message, localPath, destURL}, c.buildAuthArgs()...)
+	cmd := exec.Command("svn", args...)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("svn import failed: %w\n%s", err, output)
 	}
 
 	return nil

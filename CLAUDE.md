@@ -45,10 +45,23 @@ icw depend-ng                # Generate dependency lists for build systems
 icw depend-ng -s comp1,comp2 # Stop recursion at specific components
 ```
 
+### Authentication
+```bash
+icw auth login               # Store SVN password securely
+icw auth status              # Check authentication status
+icw auth logout              # Remove stored credentials
+icw auth test                # Test SVN connection
+```
+
 ### Release Management
 ```bash
-icw release -t <tag_name> -m "<message>"  # Release component with dependencies
-icw release -t <tag_name> -m "<message>" -d  # Dry run
+icw release -t <tag_name> -m "<message>"     # Release component with dependencies
+icw release -t <tag_name> -m "<message>" -d  # Dry run (preview)
+
+# Release creates tags for component and all dependencies
+# Updates depend.config in tags to point to released versions
+# Run from within the component directory
+
 icw dumpdepend <component> <revision> <format> [path]
 icw dd <component> <revision> <format> [path]  # Alias
 # Formats: modelsim, dc, incisiv, list
@@ -116,44 +129,74 @@ Releasing a component (icw:764-784):
 
 ## Development Notes
 
-### Main Script Structure
+### Architecture (Go Implementation)
 
-The `icw` file (main script) is structured as:
-- Global variables and configuration (lines 1-42)
-- Component management functions (lines 44-96)
-- Config file parsing (lines 100-125)
-- Release management (lines 132-181)
-- Dependency tree printing (lines 187-231)
-- SVN operations (lines 238-264)
-- HDL file discovery (lines 283-335)
-- Command handlers (lines 566-1265)
+The Go implementation is organized as:
+- **cmd/icw/**: Command-line interface and command handlers
+  - `main.go`: Root command and CLI setup
+  - `commands.go`: Command implementations (update, release, add, etc.)
+  - `auth.go`: Authentication command handlers
+  - `migrate.go`: Migration utilities
 
-### Version Management
+- **internal/**: Core packages
+  - `svn/`: SVN client with authentication
+  - `component/`: Component and workspace management
+  - `config/`: Configuration file parsing
+  - `hdl/`: HDL file discovery and classification
+  - `auth/`: Secure credential storage
+  - `version/`: Version information
 
-The version is embedded in the script:
-- `$version_number`: Integer version (line 29)
-- `$icw_version`: Full version string with date and message (line 30)
-- Update via `icw tag` command which increments version and commits to Git
+### Key Features Implemented
+
+✅ **Authentication System** (`icw auth`)
+- Secure password storage in `~/.icw/credentials`
+- Environment variable support (`ICW_SVN_PASSWORD`)
+- Auto-authentication for all SVN operations
+
+✅ **Release Management** (`icw release`)
+- Recursive dependency release
+- Automatic depend.config updates in tags
+- Dry-run mode for preview
+- Idempotent operations
+
+✅ **Component Addition** (`icw add`)
+- Creates SVN directory structure
+- Imports local component to trunk
+- Converts to SVN working copy
+- Supports categories (e.g., digital/muxes)
+
+✅ **Workspace Updates** (`icw update`)
+- Automatic branch/tag switching
+- Dependency resolution
+- Conflict detection
+
+✅ **Enhanced Tree Display** (`icw tree`)
+- Aligned column formatting
+- Branch/tag display
+- Component type indicators
 
 ### SVN Integration
 
-- Default SVN URL: `svn://anyvej11.dk`
-- Components stored at: `$svn_url/$repo/components/`
+- Default SVN URL: `svn://anyvej11.dk` (auto-detects `svn://g9` on g9 server)
+- Components stored at: `$SVN_URL/$REPO/components/`
 - Uses system SVN client at `/usr/bin/svn`
-- Username: Current user from `$ENV{'USER'}`
+- Username: Current user from `$USER` environment variable
+- Password: From `~/.icw/credentials` or `ICW_SVN_PASSWORD`
 
 ### Bash Completion
 
 Completion script at `completions/icw_bashcompletion.sh` provides:
 - Command name completion
+- Flag completion
 - Directory completion for `add` command
-- Component type completion (setup, digital, analog) for `add` target
+- Component type completion
 
 ## File Locations
 
-- **Main executable**: `icw` (Perl script)
+- **Main executable**: `icw` (Go binary)
 - **Installation target**: `~/bin/icw`
 - **Bash completion**: `/usr/local/share/bash-completion/completions/icw`
+- **Credentials**: `~/.icw/credentials` (mode 0600)
 - **Workspace config**: `workspace.config` (at workspace root)
 - **Generated files**: `cds.lib`, `local.lib`, `depend.config-*` (workspace root)
 

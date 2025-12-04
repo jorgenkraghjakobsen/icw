@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -27,6 +28,7 @@ func init() {
 	rootCmd.AddCommand(testCmd)
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(authCmd)
+	rootCmd.AddCommand(releaseCmd)
 
 	// Add flags for list command
 	listCmd.Flags().StringP("type", "t", "", "Filter by component type (analog, digital, setup, process)")
@@ -34,6 +36,13 @@ func init() {
 	listCmd.Flags().BoolP("tags", "g", false, "Show tags for component")
 	listCmd.Flags().BoolP("all", "a", false, "Show all details (branches and tags)")
 	listCmd.Flags().StringP("repo", "r", "", "Repository to list from (overrides ICW_REPO/workspace.config)")
+
+	// Add flags for release command
+	releaseCmd.Flags().StringP("tag", "t", "", "Release tag name (required)")
+	releaseCmd.Flags().StringP("message", "m", "", "Commit message (required)")
+	releaseCmd.Flags().BoolP("dry-run", "d", false, "Dry run mode (show what would be done)")
+	releaseCmd.MarkFlagRequired("tag")
+	releaseCmd.MarkFlagRequired("message")
 }
 
 var versionCmd = &cobra.Command{
@@ -142,10 +151,28 @@ func runUpdate() error {
 		if comp.VCS == "svn" {
 			// Check if already checked out
 			if svn.IsWorkingCopy(destPath) {
-				color.Yellow("  [UPDATE] %s (%s)", comp.Name, comp.Branch)
-				if err := svnClient.Update(destPath); err != nil {
-					color.Red("    Failed: %v", err)
-					continue
+				// Check if we're on the correct branch
+				currentBranch, err := svnClient.GetBranch(destPath)
+				if err != nil {
+					color.Yellow("  [UPDATE] %s (%s) - couldn't detect current branch", comp.Name, comp.Branch)
+					if err := svnClient.Update(destPath); err != nil {
+						color.Red("    Failed: %v", err)
+						continue
+					}
+				} else if currentBranch != comp.Branch {
+					// Need to switch branches
+					color.Yellow("  [SWITCH] %s (%s -> %s)", comp.Name, currentBranch, comp.Branch)
+					if err := svnClient.Switch(destPath, comp.Path, comp.Branch); err != nil {
+						color.Red("    Failed: %v", err)
+						continue
+					}
+				} else {
+					// Same branch, just update
+					color.Yellow("  [UPDATE] %s (%s)", comp.Name, comp.Branch)
+					if err := svnClient.Update(destPath); err != nil {
+						color.Red("    Failed: %v", err)
+						continue
+					}
 				}
 			} else {
 				color.Green("  [CHECKOUT] %s (%s)", comp.Name, comp.Branch)
@@ -224,15 +251,59 @@ var addCmd = &cobra.Command{
 	Use:   "add <component_path> <repo_target>",
 	Short: "Add component to repository",
 	Long: `Add a new component to the repository.
-Example: icw add digital/my_module digital
-repo_target format: <analog|digital|setup|process>[/category]`,
+
+The component must exist in your local workspace before adding to SVN.
+After adding, the component will be imported to SVN trunk.
+
+Component Path:
+  Path to the component relative to workspace root (e.g., "digital/my_module")
+  or just the component name if you're in the correct directory (e.g., "fpga_template")
+
+Repository Target:
+  - Simple type: digital, analog, setup, process
+  - Type with category: digital/muxes, analog/opamps, etc.
+
+  The category helps organize related components together.
+
+Examples:
+  icw add digital/fpga_template digital           # Add to digital type
+  icw add fpga_template digital                   # Same, if in digital/ dir
+  icw add digital/mux8to1 digital/muxes          # Add to digital/muxes category
+  icw add analog/opamp analog/amplifiers         # Add to analog/amplifiers category`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		componentPath := args[0]
-		repoTarget := args[1]
-		color.Green("Adding component: %s to %s", componentPath, repoTarget)
-		// TODO: Implement add logic
-		return fmt.Errorf("not yet implemented")
+		return runAdd(args[0], args[1])
+	},
+}
+
+var releaseCmd = &cobra.Command{
+	Use:   "release -t <tag> -m <message>",
+	Short: "Create a tagged release of a component",
+	Long: `Create a tagged release of the current component and all its dependencies.
+
+This command must be run from within a component directory. It will:
+  1. Recursively release all dependencies first
+  2. Check if the release tag already exists (skip if yes)
+  3. Create an SVN tag from the current branch
+  4. Update depend.config in the tag to point to released dependencies
+
+The release process ensures all components in the dependency tree use
+the same release tag, creating a consistent, reproducible release.
+
+Flags:
+  -t, --tag string       Release tag name (e.g., v1.0.0)
+  -m, --message string   Commit message
+  -d, --dry-run          Show what would be done without making changes
+
+Examples:
+  icw release -t v1.0.0 -m "First stable release"
+  icw release -t v1.0.1 -m "Bug fix release"
+  icw release -t v2.0.0-beta -m "Beta release" -d   # Dry run first`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		tagName, _ := cmd.Flags().GetString("tag")
+		message, _ := cmd.Flags().GetString("message")
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+		return runRelease(tagName, message, dryRun)
 	},
 }
 
@@ -675,9 +746,15 @@ func runHdl() error {
 }
 
 func printComponentTreeFromConfigs(comp *component.Component, workspaceRoot string, svnClient *svn.Client, indent int) {
-	// Print component info
+	// Print component info with aligned columns
 	indentStr := strings.Repeat(" ", indent)
-	fmt.Printf("%s%s (%s) [%s]\n", indentStr, comp.Name, comp.Branch, comp.Type)
+
+	// Format with fixed-width columns for alignment
+	// Component name gets 45 chars, branch gets 20 chars
+	nameCol := fmt.Sprintf("%s%-*s", indentStr, 45-indent, comp.Name)
+	branchCol := fmt.Sprintf("%-20s", comp.Branch)
+
+	fmt.Printf("%s  %s  [%s]\n", nameCol, branchCol, comp.Type)
 
 	// Skip if local reference - no depend.config to parse
 	if comp.VCS == "local" {
@@ -832,6 +909,54 @@ func shortenPaths(paths []string, workspaceRoot string) []string {
 	return shortened
 }
 
+// copyDir recursively copies directory contents from src to dst
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Get relative path
+		relPath, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+
+		// Skip .svn directories
+		if info.IsDir() && info.Name() == ".svn" {
+			return filepath.SkipDir
+		}
+
+		// Construct destination path
+		dstPath := filepath.Join(dst, relPath)
+
+		if info.IsDir() {
+			// Create directory
+			return os.MkdirAll(dstPath, info.Mode())
+		}
+
+		// Copy file
+		srcFile, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer srcFile.Close()
+
+		dstFile, err := os.Create(dstPath)
+		if err != nil {
+			return err
+		}
+		defer dstFile.Close()
+
+		if _, err := io.Copy(dstFile, srcFile); err != nil {
+			return err
+		}
+
+		// Preserve permissions
+		return os.Chmod(dstPath, info.Mode())
+	})
+}
+
 func runStatus() error {
 	// Find workspace root
 	root, err := config.FindWorkspaceRoot()
@@ -902,6 +1027,347 @@ func runStatus() error {
 	if !hasChanges {
 		fmt.Println()
 		color.Green("Workspace is clean - no changes detected")
+	}
+
+	return nil
+}
+
+func runAdd(componentPath, repoTarget string) error {
+	// Find workspace root
+	root, err := config.FindWorkspaceRoot()
+	if err != nil {
+		return fmt.Errorf("not in a workspace: %w", err)
+	}
+
+	color.Cyan("=== Adding Component to Repository ===\n")
+
+	// Parse workspace.config to get repository info
+	ws := component.NewWorkspace(root)
+	parser := config.NewParser(ws)
+	if err := parser.ParseWorkspaceConfig(ws.Config); err != nil {
+		return fmt.Errorf("failed to parse workspace.config: %w", err)
+	}
+
+	// Create SVN client
+	svnClient, err := svn.NewClientWithConfig(parser.Repo, parser.SvnURL)
+	if err != nil {
+		return fmt.Errorf("failed to create SVN client: %w", err)
+	}
+
+	// Parse repo_target to extract type and category
+	// Format: <type> or <type/category>
+	// Examples: "digital", "digital/muxes", "analog/opamps"
+	parts := strings.Split(repoTarget, "/")
+	componentType := parts[0]
+	var category string
+	if len(parts) > 1 {
+		category = strings.Join(parts[1:], "/")
+	}
+
+	// Validate component type
+	validTypes := map[string]bool{
+		"digital": true,
+		"analog":  true,
+		"setup":   true,
+		"process": true,
+	}
+	if !validTypes[componentType] {
+		return fmt.Errorf("invalid component type '%s', must be one of: digital, analog, setup, process", componentType)
+	}
+
+	// Resolve component path
+	// If componentPath doesn't contain a type prefix, try to infer it from current directory
+	var fullComponentPath string
+	var componentName string
+
+	if strings.Contains(componentPath, "/") {
+		// Full path provided (e.g., "digital/fpga_template")
+		fullComponentPath = componentPath
+		pathParts := strings.Split(componentPath, "/")
+		componentName = pathParts[len(pathParts)-1]
+	} else {
+		// Just component name provided (e.g., "fpga_template")
+		// Try to infer from current directory
+		cwd, _ := os.Getwd()
+		relPath, err := filepath.Rel(root, cwd)
+		if err == nil && relPath != "." {
+			// We're in a subdirectory of the workspace
+			fullComponentPath = filepath.Join(relPath, componentPath)
+		} else {
+			// Assume it's in the component type directory
+			fullComponentPath = filepath.Join(componentType, componentPath)
+		}
+		componentName = componentPath
+	}
+
+	// Check if component exists locally
+	localPath := filepath.Join(root, fullComponentPath)
+	if _, err := os.Stat(localPath); os.IsNotExist(err) {
+		return fmt.Errorf("component not found at: %s", localPath)
+	}
+
+	color.Green("Component path: %s", fullComponentPath)
+	color.Green("Local path: %s", localPath)
+	color.Green("Repository: %s", svnClient.Repo)
+	color.Green("Type: %s", componentType)
+	if category != "" {
+		color.Green("Category: %s", category)
+	}
+	fmt.Println()
+
+	// Construct SVN path
+	var svnComponentPath string
+	if category != "" {
+		svnComponentPath = fmt.Sprintf("%s/%s/%s", componentType, category, componentName)
+	} else {
+		svnComponentPath = fmt.Sprintf("%s/%s", componentType, componentName)
+	}
+
+	// Check if local component is already under SVN control
+	if svn.IsWorkingCopy(localPath) {
+		return fmt.Errorf("component is already under SVN control: %s", localPath)
+	}
+
+	color.Yellow("Step 1: Creating directory structure in SVN...")
+	color.Cyan("  SVN path: %s", svnComponentPath)
+
+	// Create directory structure (trunk, tags, branches) in SVN
+	trunkURL := fmt.Sprintf("%s/%s/components/%s/trunk", svnClient.URL, svnClient.Repo, svnComponentPath)
+	if err := svnClient.CreateComponentDirs(svnComponentPath); err != nil {
+		return fmt.Errorf("failed to create SVN directories: %w", err)
+	}
+	color.Green("  ✓ Directory structure created\n")
+
+	// Backup the local files temporarily
+	color.Yellow("Step 2: Preparing local component...")
+	tmpPath := localPath + ".tmp"
+	if err := os.Rename(localPath, tmpPath); err != nil {
+		return fmt.Errorf("failed to backup local component: %w", err)
+	}
+	color.Green("  ✓ Local files backed up\n")
+
+	// Checkout empty trunk to local path (creates SVN working copy)
+	color.Yellow("Step 3: Checking out empty trunk...")
+	if err := svnClient.Checkout(svnComponentPath, "trunk", localPath); err != nil {
+		// Restore backup on failure
+		os.Rename(tmpPath, localPath)
+		return fmt.Errorf("failed to checkout trunk: %w", err)
+	}
+	color.Green("  ✓ Working copy created\n")
+
+	// Copy files back from backup
+	color.Yellow("Step 4: Copying files to working copy...")
+	if err := copyDir(tmpPath, localPath); err != nil {
+		return fmt.Errorf("failed to copy files: %w", err)
+	}
+	// Remove backup
+	os.RemoveAll(tmpPath)
+	color.Green("  ✓ Files copied\n")
+
+	// Add all files to SVN
+	color.Yellow("Step 5: Adding files to SVN...")
+	if err := svnClient.AddAll(localPath); err != nil {
+		return fmt.Errorf("failed to add files: %w", err)
+	}
+	color.Green("  ✓ Files added\n")
+
+	// Commit files
+	color.Yellow("Step 6: Committing files to repository...")
+	commitMsg := fmt.Sprintf("Initial import of %s", componentName)
+	if err := svnClient.Commit(localPath, commitMsg); err != nil {
+		return fmt.Errorf("failed to commit files: %w", err)
+	}
+	color.Green("  ✓ Files committed\n")
+
+	color.Green("=== Component Added Successfully! ===\n")
+	color.Cyan("Component '%s' has been added to repository '%s'", componentName, svnClient.Repo)
+	color.Cyan("SVN path: %s", svnComponentPath)
+	color.Cyan("Trunk URL: %s", trunkURL)
+	color.Cyan("Local path is now an SVN working copy: %s", localPath)
+	fmt.Println()
+	color.Yellow("You can now:")
+	color.Yellow("  - Make changes and commit: icw commit")
+	color.Yellow("  - Update from repository: icw update")
+	color.Yellow("  - Add to workspace.config: use component(\"%s\", \"%s\", \"trunk\")", fullComponentPath, componentType)
+
+	return nil
+}
+
+func runRelease(tagName, message string, dryRun bool) error {
+	// Find workspace root
+	root, err := config.FindWorkspaceRoot()
+	if err != nil {
+		return fmt.Errorf("not in a workspace: %w", err)
+	}
+
+	// Parse workspace.config to build component tree
+	ws := component.NewWorkspace(root)
+	parser := config.NewParser(ws)
+	if err := parser.ParseWorkspaceConfig(ws.Config); err != nil {
+		return fmt.Errorf("failed to parse workspace.config: %w", err)
+	}
+
+	// Load dependencies for all components
+	for _, comp := range ws.Components {
+		if comp.VCS == "local" {
+			continue
+		}
+		destPath := filepath.Join(root, comp.Path)
+		dependConfigPath := filepath.Join(destPath, "depend.config")
+
+		// Parse dependencies (ignoring errors if file doesn't exist)
+		_, err := parser.ParseDependConfig(comp, dependConfigPath)
+		if err != nil {
+			// Check if it's a conflict error
+			if strings.Contains(err.Error(), "dependency conflict") || strings.Contains(err.Error(), "branch mismatch") {
+				return fmt.Errorf("version conflict detected: %w", err)
+			}
+			// Ignore other errors (e.g., file not found)
+		}
+	}
+
+	// Create SVN client
+	svnClient, err := svn.NewClientWithConfig(parser.Repo, parser.SvnURL)
+	if err != nil {
+		return fmt.Errorf("failed to create SVN client: %w", err)
+	}
+
+	// Detect current component from directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	// Extract component name from current directory
+	componentName := filepath.Base(cwd)
+
+	// Find the component in the workspace
+	var currentComp *component.Component
+	for _, comp := range ws.Components {
+		// Match by full path or exact name match
+		compBaseName := filepath.Base(comp.Path)
+		if comp.Name == componentName || compBaseName == componentName || comp.Path == componentName {
+			currentComp = comp
+			break
+		}
+	}
+
+	if currentComp == nil {
+		return fmt.Errorf("current directory '%s' is not a known component in workspace.config", componentName)
+	}
+
+	if dryRun {
+		color.Yellow("=== DRY RUN MODE ===")
+		color.Yellow("Showing what would be done without making changes\n")
+	} else {
+		color.Cyan("=== Releasing Component ===\n")
+	}
+
+	// Release component and all dependencies
+	if err := releaseComponent(svnClient, currentComp, tagName, message, "", dryRun, root, parser); err != nil {
+		return err
+	}
+
+	if dryRun {
+		fmt.Println()
+		color.Green("=== Dry Run Complete ===")
+		color.Cyan("Run without -d flag to actually create the release")
+	} else {
+		fmt.Println()
+		color.Green("=== Release Complete: %s ===", tagName)
+	}
+
+	return nil
+}
+
+func releaseComponent(
+	svnClient *svn.Client,
+	comp *component.Component,
+	tagName string,
+	message string,
+	indent string,
+	dryRun bool,
+	workspaceRoot string,
+	parser *config.Parser,
+) error {
+	// 1. Release dependencies first (recursive, depth-first)
+	if len(comp.Dependencies) > 0 {
+		for _, dep := range comp.Dependencies {
+			if err := releaseComponent(svnClient, dep, tagName, message, indent+"  ", dryRun, workspaceRoot, parser); err != nil {
+				return err
+			}
+		}
+	}
+
+	// 2. Check if component is already released
+	exists, err := svnClient.TagExists(comp.Path, tagName)
+	if err != nil {
+		return fmt.Errorf("failed to check if tag exists: %w", err)
+	}
+
+	if exists {
+		color.Yellow("%s%s %s already exists", indent, comp.Name, tagName)
+		return nil
+	}
+
+	// 3. Create release tag
+	if dryRun {
+		color.Cyan("%s[DRY RUN] Would create tag: %s/tags/%s from %s", indent, comp.Path, tagName, comp.Branch)
+	} else {
+		color.Green("%sReleasing %s (%s) -> tags/%s", indent, comp.Name, comp.Path, tagName)
+		if err := svnClient.CreateTag(comp.Path, comp.Branch, tagName, message); err != nil {
+			return fmt.Errorf("failed to create tag for %s: %w", comp.Name, err)
+		}
+		color.Green("%s  ✓ Created tag", indent)
+	}
+
+	// 4. Update depend.config in release tag if component has dependencies
+	if len(comp.Dependencies) > 0 {
+		if dryRun {
+			color.Cyan("%s[DRY RUN] Would update depend.config in tag", indent)
+			for _, dep := range comp.Dependencies {
+				color.Cyan("%s    - %s -> tags/%s", indent, dep.Name, tagName)
+			}
+		} else {
+			// Generate new depend.config pointing to released dependencies
+			// Use just the component name (without path) for temp file
+			compBaseName := filepath.Base(comp.Name)
+			tempFile := filepath.Join(workspaceRoot, fmt.Sprintf("depend.config-%s-%s", compBaseName, tagName))
+			f, err := os.Create(tempFile)
+			if err != nil {
+				return fmt.Errorf("failed to create temp depend.config: %w", err)
+			}
+
+			for _, dep := range comp.Dependencies {
+				_, err := fmt.Fprintf(f, "use component(\"%s\", \"%s\", \"tags/%s\");\n", dep.Path, dep.Type, tagName)
+				if err != nil {
+					f.Close()
+					return fmt.Errorf("failed to write depend.config: %w", err)
+				}
+			}
+			f.Close()
+
+			// Delete old depend.config from tag
+			dependConfigURL := fmt.Sprintf("%s/%s/components/%s/tags/%s/depend.config",
+				svnClient.URL, svnClient.Repo, comp.Path, tagName)
+
+			if err := svnClient.DeleteFile(dependConfigURL, message+" (update depend.config 1/2)"); err != nil {
+				// Ignore error if file doesn't exist
+				if !strings.Contains(err.Error(), "non-existent") {
+					color.Yellow("%s  Warning: couldn't delete old depend.config: %v", indent, err)
+				}
+			}
+
+			// Import new depend.config
+			if err := svnClient.ImportFile(tempFile, dependConfigURL, message+" (update depend.config 2/2)"); err != nil {
+				return fmt.Errorf("failed to import depend.config: %w", err)
+			}
+
+			// Clean up temp file
+			os.Remove(tempFile)
+
+			color.Green("%s  ✓ Updated depend.config", indent)
+		}
 	}
 
 	return nil
