@@ -255,6 +255,7 @@ func (c *Client) AddAll(path string) error {
 	args := append([]string{"add", "--force"}, pathsToAdd...)
 	args = append(args, c.buildAuthArgs()...)
 	cmd := exec.Command("svn", args...)
+	cmd.Dir = path // Set working directory explicitly (important if cwd was invalidated)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -268,6 +269,7 @@ func (c *Client) AddAll(path string) error {
 func (c *Client) Commit(path, message string) error {
 	args := append([]string{"commit", path, "-m", message}, c.buildAuthArgs()...)
 	cmd := exec.Command("svn", args...)
+	cmd.Dir = path // Set working directory explicitly (important if cwd was invalidated)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {

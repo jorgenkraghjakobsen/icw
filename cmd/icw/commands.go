@@ -1080,7 +1080,16 @@ func runAdd(componentPath, repoTarget string) error {
 	var fullComponentPath string
 	var componentName string
 
-	if strings.Contains(componentPath, "/") {
+	// Handle "." as current directory
+	if componentPath == "." {
+		cwd, _ := os.Getwd()
+		relPath, err := filepath.Rel(root, cwd)
+		if err != nil || relPath == "." {
+			return fmt.Errorf("cannot use '.' from workspace root, please specify component path")
+		}
+		fullComponentPath = relPath
+		componentName = filepath.Base(cwd)
+	} else if strings.Contains(componentPath, "/") {
 		// Full path provided (e.g., "digital/fpga_template")
 		fullComponentPath = componentPath
 		pathParts := strings.Split(componentPath, "/")
@@ -1138,41 +1147,34 @@ func runAdd(componentPath, repoTarget string) error {
 	}
 	color.Green("  ✓ Directory structure created\n")
 
-	// Backup the local files temporarily
-	color.Yellow("Step 2: Preparing local component...")
-	tmpPath := localPath + ".tmp"
-	if err := os.Rename(localPath, tmpPath); err != nil {
-		return fmt.Errorf("failed to backup local component: %w", err)
-	}
-	color.Green("  ✓ Local files backed up\n")
-
-	// Checkout empty trunk to local path (creates SVN working copy)
-	color.Yellow("Step 3: Checking out empty trunk...")
-	if err := svnClient.Checkout(svnComponentPath, "trunk", localPath); err != nil {
-		// Restore backup on failure
-		os.Rename(tmpPath, localPath)
+	// Checkout trunk to temp directory, then move .svn into existing directory
+	// This avoids renaming the user's directory (which breaks shell cwd)
+	color.Yellow("Step 2: Creating SVN working copy...")
+	tmpPath := localPath + ".svn-tmp"
+	if err := svnClient.Checkout(svnComponentPath, "trunk", tmpPath); err != nil {
+		os.RemoveAll(tmpPath)
 		return fmt.Errorf("failed to checkout trunk: %w", err)
 	}
+
+	// Move .svn from temp to component directory
+	svnDir := filepath.Join(tmpPath, ".svn")
+	targetSvnDir := filepath.Join(localPath, ".svn")
+	if err := os.Rename(svnDir, targetSvnDir); err != nil {
+		os.RemoveAll(tmpPath)
+		return fmt.Errorf("failed to initialize working copy: %w", err)
+	}
+	os.RemoveAll(tmpPath)
 	color.Green("  ✓ Working copy created\n")
 
-	// Copy files back from backup
-	color.Yellow("Step 4: Copying files to working copy...")
-	if err := copyDir(tmpPath, localPath); err != nil {
-		return fmt.Errorf("failed to copy files: %w", err)
-	}
-	// Remove backup
-	os.RemoveAll(tmpPath)
-	color.Green("  ✓ Files copied\n")
-
 	// Add all files to SVN
-	color.Yellow("Step 5: Adding files to SVN...")
+	color.Yellow("Step 3: Adding files to SVN...")
 	if err := svnClient.AddAll(localPath); err != nil {
 		return fmt.Errorf("failed to add files: %w", err)
 	}
 	color.Green("  ✓ Files added\n")
 
 	// Commit files
-	color.Yellow("Step 6: Committing files to repository...")
+	color.Yellow("Step 4: Committing files to repository...")
 	commitMsg := fmt.Sprintf("Initial import of %s", componentName)
 	if err := svnClient.Commit(localPath, commitMsg); err != nil {
 		return fmt.Errorf("failed to commit files: %w", err)
