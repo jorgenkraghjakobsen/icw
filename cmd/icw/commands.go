@@ -215,9 +215,58 @@ func runUpdate() error {
 		}
 	}
 
+	// Generate Cadence library files
+	generateCadenceLibs(root, ws)
+
 	color.Green("\nUpdate complete!")
 	color.Green("Processed %d component(s) total", len(checkedOut))
 	return nil
+}
+
+// generateCadenceLibs creates local.lib with DEFINE lines for analog/local
+// components and copies cds.lib from setup/analog_certus to workspace root.
+func generateCadenceLibs(root string, ws *component.Workspace) {
+	localLibPath := filepath.Join(root, "local.lib")
+
+	// Remove existing local.lib (fresh generation each time)
+	os.Remove(localLibPath)
+
+	// Build local.lib content
+	var lines []string
+	for _, comp := range ws.Components {
+		basename := filepath.Base(comp.Path)
+		if comp.VCS == "local" {
+			lines = append(lines, fmt.Sprintf("DEFINE %s %s", basename, comp.Path))
+		} else if comp.Type == component.TypeAnalog {
+			lines = append(lines, fmt.Sprintf("DEFINE %s analog/%s #revision %s from %s", basename, basename, comp.Branch, comp.Path))
+		}
+	}
+
+	if len(lines) > 0 {
+		content := strings.Join(lines, "\n") + "\n"
+		if err := os.WriteFile(localLibPath, []byte(content), 0644); err != nil {
+			color.Red("Failed to write local.lib: %v", err)
+		} else {
+			color.Green("Generated local.lib with %d entries", len(lines))
+		}
+	}
+
+	// Copy cds.lib from setup/analog_certus if it exists
+	cdsSource := filepath.Join(root, "setup", "analog_certus", "cds.lib")
+	cdsDest := filepath.Join(root, "cds.lib")
+	if src, err := os.Open(cdsSource); err == nil {
+		defer src.Close()
+		if dst, err := os.Create(cdsDest); err == nil {
+			defer dst.Close()
+			if _, err := io.Copy(dst, src); err != nil {
+				color.Red("Failed to copy cds.lib: %v", err)
+			} else {
+				color.Green("Copied cds.lib from setup/analog_certus/")
+			}
+		} else {
+			color.Red("Failed to create cds.lib: %v", err)
+		}
+	}
 }
 
 var statusCmd = &cobra.Command{
