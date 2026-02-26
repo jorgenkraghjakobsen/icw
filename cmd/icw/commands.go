@@ -251,20 +251,28 @@ func generateCadenceLibs(root string, ws *component.Workspace) {
 		}
 	}
 
-	// Copy cds.lib from setup/analog_certus if it exists
-	cdsSource := filepath.Join(root, "setup", "analog_certus", "cds.lib")
-	cdsDest := filepath.Join(root, "cds.lib")
-	if src, err := os.Open(cdsSource); err == nil {
-		defer src.Close()
-		if dst, err := os.Create(cdsDest); err == nil {
-			defer dst.Close()
-			if _, err := io.Copy(dst, src); err != nil {
-				color.Red("Failed to copy cds.lib: %v", err)
+	// Copy files from setup/analog_certus if they exist
+	setupFiles := []struct {
+		src, dst, label string
+	}{
+		{"cds.lib", "cds.lib", "cds.lib"},
+		{"cdsinit", ".cdsinit", ".cdsinit"},
+	}
+	for _, f := range setupFiles {
+		srcPath := filepath.Join(root, "setup", "analog_certus", f.src)
+		dstPath := filepath.Join(root, f.dst)
+		if src, err := os.Open(srcPath); err == nil {
+			if dst, err := os.Create(dstPath); err == nil {
+				if _, err := io.Copy(dst, src); err != nil {
+					color.Red("Failed to copy %s: %v", f.label, err)
+				} else {
+					color.Green("Copied %s from setup/analog_certus/", f.label)
+				}
+				dst.Close()
 			} else {
-				color.Green("Copied cds.lib from setup/analog_certus/")
+				color.Red("Failed to create %s: %v", f.label, err)
 			}
-		} else {
-			color.Red("Failed to create cds.lib: %v", err)
+			src.Close()
 		}
 	}
 }
