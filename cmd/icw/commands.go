@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/fatih/color"
 	"github.com/jakobsen/icw/internal/component"
@@ -118,101 +119,136 @@ func runUpdate() error {
 		color.Cyan("  (from workspace.config)")
 	}
 
-	// Collect components to process (including dependencies)
-	// We'll use a queue to process components in order
-	processQueue := make([]*component.Component, 0)
-	for _, comp := range ws.Components {
-		processQueue = append(processQueue, comp)
-	}
-
-	// Track components we've already checked out to avoid duplicates
+	// Parallel update with concurrent work queue
+	var mu sync.Mutex          // protects checkedOut, parser state, and output
 	checkedOut := make(map[string]bool)
+	sem := make(chan struct{}, 8) // limit concurrent SVN operations
+	var wg sync.WaitGroup
+	var firstErr error           // capture first conflict error
 
-	// Process components from the queue
-	for len(processQueue) > 0 {
-		// Pop from front of queue
-		comp := processQueue[0]
-		processQueue = processQueue[1:]
+	var processComponent func(comp *component.Component)
+	processComponent = func(comp *component.Component) {
+		defer wg.Done()
 
-		// Skip if already processed
-		if checkedOut[comp.Name] {
-			continue
+		// Check if already processed or if we hit a conflict
+		mu.Lock()
+		if checkedOut[comp.Name] || firstErr != nil {
+			mu.Unlock()
+			return
 		}
 		checkedOut[comp.Name] = true
+		mu.Unlock()
 
 		// Skip local references
 		if comp.VCS == "local" {
+			mu.Lock()
 			color.Blue("  [SKIP] %s (local reference)", comp.Name)
-			continue
+			mu.Unlock()
+			return
 		}
 
 		destPath := filepath.Join(root, comp.Path)
 
 		if comp.VCS == "svn" {
-			// Check if already checked out
+			// Acquire semaphore to limit concurrent SVN operations
+			sem <- struct{}{}
+
+			var svnOutput string
+			var svnErr error
+
 			if svn.IsWorkingCopy(destPath) {
-				// Check if we're on the correct branch
 				currentBranch, err := svnClient.GetBranch(destPath)
 				if err != nil {
+					mu.Lock()
 					color.Yellow("  [UPDATE] %s (%s) - couldn't detect current branch", comp.Name, comp.Branch)
-					if err := svnClient.Update(destPath); err != nil {
-						color.Red("    Failed: %v", err)
-						continue
-					}
+					mu.Unlock()
+					svnOutput, svnErr = svnClient.Update(destPath)
 				} else if currentBranch != comp.Branch {
-					// Need to switch branches
+					mu.Lock()
 					color.Yellow("  [SWITCH] %s (%s -> %s)", comp.Name, currentBranch, comp.Branch)
-					if err := svnClient.Switch(destPath, comp.Path, comp.Branch); err != nil {
-						color.Red("    Failed: %v", err)
-						continue
-					}
+					mu.Unlock()
+					svnOutput, svnErr = svnClient.Switch(destPath, comp.Path, comp.Branch)
 				} else {
-					// Same branch, just update
+					mu.Lock()
 					color.Yellow("  [UPDATE] %s (%s)", comp.Name, comp.Branch)
-					if err := svnClient.Update(destPath); err != nil {
-						color.Red("    Failed: %v", err)
-						continue
-					}
+					mu.Unlock()
+					svnOutput, svnErr = svnClient.Update(destPath)
 				}
 			} else {
+				mu.Lock()
 				color.Green("  [CHECKOUT] %s (%s)", comp.Name, comp.Branch)
-				// Create parent directory if needed
+				mu.Unlock()
 				parentDir := filepath.Dir(destPath)
 				if err := os.MkdirAll(parentDir, 0755); err != nil {
+					<-sem
+					mu.Lock()
 					color.Red("    Failed to create directory: %v", err)
-					continue
+					mu.Unlock()
+					return
 				}
-
-				if err := svnClient.Checkout(comp.Path, comp.Branch, destPath); err != nil {
-					color.Red("    Failed: %v", err)
-					continue
-				}
+				svnOutput, svnErr = svnClient.Checkout(comp.Path, comp.Branch, destPath)
 			}
 
-			// Now check for depend.config and process dependencies
+			<-sem // Release semaphore after SVN operation
+
+			// Print SVN output atomically
+			mu.Lock()
+			if svnOutput != "" {
+				fmt.Print(svnOutput)
+			}
+			if svnErr != nil {
+				color.Red("    Failed: %v", svnErr)
+				mu.Unlock()
+				return
+			}
+			mu.Unlock()
+
+			// Parse dependencies (modifies shared parser/workspace state)
 			dependConfigPath := filepath.Join(destPath, "depend.config")
+			mu.Lock()
 			dependencies, err := parser.ParseDependConfig(comp, dependConfigPath)
 			if err != nil {
-				// Check if it's a conflict error
 				if strings.Contains(err.Error(), "dependency conflict") || strings.Contains(err.Error(), "branch mismatch") {
 					color.Red("    ERROR: %v", err)
-					return fmt.Errorf("version conflict detected: %w", err)
+					if firstErr == nil {
+						firstErr = fmt.Errorf("version conflict detected: %w", err)
+					}
+					mu.Unlock()
+					return
 				}
 				color.Red("    Warning: Failed to parse dependencies: %v", err)
-				continue
+				mu.Unlock()
+				return
 			}
 
-			// Add dependencies to the process queue
 			if len(dependencies) > 0 {
 				color.Cyan("    Found %d dependencies", len(dependencies))
-				for _, dep := range dependencies {
-					processQueue = append(processQueue, dep)
-				}
+			}
+			mu.Unlock()
+
+			// Launch goroutines for discovered dependencies
+			for _, dep := range dependencies {
+				wg.Add(1)
+				go processComponent(dep)
 			}
 
 		} else if comp.VCS == "git" {
+			mu.Lock()
 			color.Yellow("  [TODO] %s (git support not yet implemented)", comp.Name)
+			mu.Unlock()
 		}
+	}
+
+	// Launch all top-level components in parallel
+	for _, comp := range ws.Components {
+		wg.Add(1)
+		go processComponent(comp)
+	}
+
+	wg.Wait()
+
+	if firstErr != nil {
+		return firstErr
 	}
 
 	// Generate Cadence library files
@@ -1208,9 +1244,12 @@ func runAdd(componentPath, repoTarget string) error {
 	// This avoids renaming the user's directory (which breaks shell cwd)
 	color.Yellow("Step 2: Creating SVN working copy...")
 	tmpPath := localPath + ".svn-tmp"
-	if err := svnClient.Checkout(svnComponentPath, "trunk", tmpPath); err != nil {
+	if output, err := svnClient.Checkout(svnComponentPath, "trunk", tmpPath); err != nil {
+		fmt.Print(output)
 		os.RemoveAll(tmpPath)
 		return fmt.Errorf("failed to checkout trunk: %w", err)
+	} else if output != "" {
+		fmt.Print(output)
 	}
 
 	// Move .svn from temp to component directory

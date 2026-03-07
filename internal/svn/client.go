@@ -79,52 +79,49 @@ func NewClientWithConfig(repo, svnURL string) (*Client, error) {
 }
 
 // Checkout checks out a component from SVN
-func (c *Client) Checkout(componentPath, branch, destPath string) error {
+func (c *Client) Checkout(componentPath, branch, destPath string) (string, error) {
 	// Build SVN URL: svn://anyvej11.dk/repo/components/path/branch
 	svnURL := fmt.Sprintf("%s/%s/components/%s/%s", c.URL, c.Repo, componentPath, branch)
 
 	// Run svn checkout
 	args := append([]string{"checkout", svnURL, destPath}, c.buildAuthArgs()...)
 	cmd := exec.Command("svn", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("svn checkout failed: %w", err)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(output), fmt.Errorf("svn checkout failed: %w", err)
 	}
 
-	return nil
+	return string(output), nil
 }
 
 // Update updates an existing SVN working copy
-func (c *Client) Update(path string) error {
+func (c *Client) Update(path string) (string, error) {
 	args := append([]string{"update", path}, c.buildAuthArgs()...)
 	cmd := exec.Command("svn", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("svn update failed: %w", err)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(output), fmt.Errorf("svn update failed: %w", err)
 	}
 
-	return nil
+	return string(output), nil
 }
 
 // Switch switches an existing working copy to a different branch/tag
-func (c *Client) Switch(localPath, componentPath, branch string) error {
+func (c *Client) Switch(localPath, componentPath, branch string) (string, error) {
 	// Build target URL
 	targetURL := fmt.Sprintf("%s/%s/components/%s/%s", c.URL, c.Repo, componentPath, branch)
 
 	args := append([]string{"switch", targetURL, localPath}, c.buildAuthArgs()...)
 	cmd := exec.Command("svn", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("svn switch failed: %w", err)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(output), fmt.Errorf("svn switch failed: %w", err)
 	}
 
-	return nil
+	return string(output), nil
 }
 
 // Status returns the status of a working copy
