@@ -759,6 +759,47 @@ type treeNode struct {
 	children []*treeNode
 }
 
+// branchConflict records when a component is requested at different branches
+type branchConflict struct {
+	path     string
+	branches map[string][]string // branch -> list of "requested by" paths
+}
+
+// branchTracker detects when the same component appears with different branches
+type branchTracker struct {
+	mu   sync.Mutex
+	seen map[string]*branchConflict // component path -> conflict info
+}
+
+func newBranchTracker() *branchTracker {
+	return &branchTracker{seen: make(map[string]*branchConflict)}
+}
+
+// track records a component usage; parent is the requesting component ("workspace" for top-level)
+func (bt *branchTracker) track(comp *component.Component, parent string) {
+	bt.mu.Lock()
+	defer bt.mu.Unlock()
+	bc, ok := bt.seen[comp.Path]
+	if !ok {
+		bc = &branchConflict{path: comp.Path, branches: make(map[string][]string)}
+		bt.seen[comp.Path] = bc
+	}
+	bc.branches[comp.Branch] = append(bc.branches[comp.Branch], parent)
+}
+
+// conflicts returns all components that have more than one branch requested
+func (bt *branchTracker) conflicts() []branchConflict {
+	bt.mu.Lock()
+	defer bt.mu.Unlock()
+	var result []branchConflict
+	for _, bc := range bt.seen {
+		if len(bc.branches) > 1 {
+			result = append(result, *bc)
+		}
+	}
+	return result
+}
+
 // dependCache provides thread-safe caching of depend.config content
 type dependCache struct {
 	mu    sync.Mutex
@@ -815,7 +856,7 @@ func fetchDependConfig(comp *component.Component, workspaceRoot string, svnClien
 }
 
 // resolveTree builds the full tree structure, fetching dependencies in parallel at each level
-func resolveTree(comps []*component.Component, workspaceRoot string, svnClient *svn.Client, cache *dependCache) []*treeNode {
+func resolveTree(comps []*component.Component, parentName string, workspaceRoot string, svnClient *svn.Client, cache *dependCache, tracker *branchTracker) []*treeNode {
 	nodes := make([]*treeNode, len(comps))
 
 	// Fetch all depend.configs at this level in parallel
@@ -828,6 +869,7 @@ func resolveTree(comps []*component.Component, workspaceRoot string, svnClient *
 	var wg sync.WaitGroup
 	for i, comp := range comps {
 		nodes[i] = &treeNode{comp: comp}
+		tracker.track(comp, parentName)
 		wg.Add(1)
 		go func(idx int, c *component.Component) {
 			defer wg.Done()
@@ -844,7 +886,7 @@ func resolveTree(comps []*component.Component, workspaceRoot string, svnClient *
 	// Recursively resolve children
 	for _, r := range results {
 		if len(r.deps) > 0 {
-			nodes[r.idx].children = resolveTree(r.deps, workspaceRoot, svnClient, cache)
+			nodes[r.idx].children = resolveTree(r.deps, comps[r.idx].Name, workspaceRoot, svnClient, cache, tracker)
 		}
 	}
 
@@ -898,13 +940,28 @@ func runTree() error {
 		topLevel = append(topLevel, comp)
 	}
 
-	// Resolve full tree (parallel fetches + caching)
+	// Resolve full tree (parallel fetches + caching + conflict detection)
 	cache := newDependCache()
-	nodes := resolveTree(topLevel, root, svnClient, cache)
+	tracker := newBranchTracker()
+	nodes := resolveTree(topLevel, "workspace", root, svnClient, cache, tracker)
 
 	// Print dependency tree
 	color.Cyan("Dependency tree for workspace\n")
 	printTree(nodes, 0)
+
+	// Report branch conflicts
+	conflicts := tracker.conflicts()
+	if len(conflicts) > 0 {
+		fmt.Println()
+		color.Red("WARNING: Branch conflicts detected!\n")
+		for _, c := range conflicts {
+			color.Red("  %s requested at different branches:", c.path)
+			for branch, requestedBy := range c.branches {
+				color.Yellow("    %-20s  (by %s)", branch, strings.Join(requestedBy, ", "))
+			}
+		}
+		return fmt.Errorf("branch conflicts detected for %d component(s)", len(conflicts))
+	}
 
 	return nil
 }
