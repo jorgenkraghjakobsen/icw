@@ -753,6 +753,117 @@ func showMatchingComponents(svnClient *svn.Client, pattern string, showBranches,
 	return nil
 }
 
+// treeNode holds a resolved component and its children for printing
+type treeNode struct {
+	comp     *component.Component
+	children []*treeNode
+}
+
+// dependCache provides thread-safe caching of depend.config content
+type dependCache struct {
+	mu    sync.Mutex
+	cache map[string]string // key: "path:branch" -> depend.config content ("" = no deps)
+}
+
+func newDependCache() *dependCache {
+	return &dependCache{cache: make(map[string]string)}
+}
+
+// get returns cached content and whether it was found
+func (dc *dependCache) get(path, branch string) (string, bool) {
+	dc.mu.Lock()
+	defer dc.mu.Unlock()
+	v, ok := dc.cache[path+":"+branch]
+	return v, ok
+}
+
+// set stores content in the cache
+func (dc *dependCache) set(path, branch, content string) {
+	dc.mu.Lock()
+	defer dc.mu.Unlock()
+	dc.cache[path+":"+branch] = content
+}
+
+// fetchDependConfig reads depend.config from local checkout or SVN, using cache
+func fetchDependConfig(comp *component.Component, workspaceRoot string, svnClient *svn.Client, cache *dependCache) string {
+	if comp.VCS == "local" {
+		return ""
+	}
+
+	if content, ok := cache.get(comp.Path, comp.Branch); ok {
+		return content
+	}
+
+	var content string
+
+	// Check local first
+	dependConfigPath := filepath.Join(workspaceRoot, comp.Path, "depend.config")
+	if _, err := os.Stat(dependConfigPath); err == nil {
+		data, err := os.ReadFile(dependConfigPath)
+		if err == nil {
+			content = string(data)
+		}
+	} else {
+		result, err := svnClient.Cat(comp.Path, comp.Branch, "depend.config")
+		if err == nil {
+			content = result
+		}
+	}
+
+	cache.set(comp.Path, comp.Branch, content)
+	return content
+}
+
+// resolveTree builds the full tree structure, fetching dependencies in parallel at each level
+func resolveTree(comps []*component.Component, workspaceRoot string, svnClient *svn.Client, cache *dependCache) []*treeNode {
+	nodes := make([]*treeNode, len(comps))
+
+	// Fetch all depend.configs at this level in parallel
+	type fetchResult struct {
+		idx  int
+		deps []*component.Component
+	}
+	results := make([]fetchResult, len(comps))
+
+	var wg sync.WaitGroup
+	for i, comp := range comps {
+		nodes[i] = &treeNode{comp: comp}
+		wg.Add(1)
+		go func(idx int, c *component.Component) {
+			defer wg.Done()
+			content := fetchDependConfig(c, workspaceRoot, svnClient, cache)
+			var deps []*component.Component
+			if content != "" {
+				deps = parseDependConfigContentForTree(content)
+			}
+			results[idx] = fetchResult{idx: idx, deps: deps}
+		}(i, comp)
+	}
+	wg.Wait()
+
+	// Recursively resolve children
+	for _, r := range results {
+		if len(r.deps) > 0 {
+			nodes[r.idx].children = resolveTree(r.deps, workspaceRoot, svnClient, cache)
+		}
+	}
+
+	return nodes
+}
+
+// printTree prints the resolved tree
+func printTree(nodes []*treeNode, indent int) {
+	for _, n := range nodes {
+		indentStr := strings.Repeat(" ", indent)
+		nameCol := fmt.Sprintf("%s%-*s", indentStr, 45-indent, n.comp.Name)
+		branchCol := fmt.Sprintf("%-20s", n.comp.Branch)
+		fmt.Printf("%s  %s  [%s]\n", nameCol, branchCol, n.comp.Type)
+		if len(n.children) > 0 {
+			printTree(n.children, indent+2)
+		}
+	}
+}
+
 func runTree() error {
 	// Find workspace root
 	root, err := config.FindWorkspaceRoot()
@@ -781,13 +892,19 @@ func runTree() error {
 		return fmt.Errorf("failed to create SVN client: %w", err)
 	}
 
+	// Collect top-level components
+	topLevel := make([]*component.Component, 0, len(ws.Components))
+	for _, comp := range ws.Components {
+		topLevel = append(topLevel, comp)
+	}
+
+	// Resolve full tree (parallel fetches + caching)
+	cache := newDependCache()
+	nodes := resolveTree(topLevel, root, svnClient, cache)
+
 	// Print dependency tree
 	color.Cyan("Dependency tree for workspace\n")
-
-	// Print each top-level component from workspace.config
-	for _, comp := range ws.Components {
-		printComponentTreeFromConfigs(comp, root, svnClient, 0)
-	}
+	printTree(nodes, 0)
 
 	return nil
 }
@@ -838,56 +955,6 @@ func runHdl() error {
 	return nil
 }
 
-func printComponentTreeFromConfigs(comp *component.Component, workspaceRoot string, svnClient *svn.Client, indent int) {
-	// Print component info with aligned columns
-	indentStr := strings.Repeat(" ", indent)
-
-	// Format with fixed-width columns for alignment
-	// Component name gets 45 chars, branch gets 20 chars
-	nameCol := fmt.Sprintf("%s%-*s", indentStr, 45-indent, comp.Name)
-	branchCol := fmt.Sprintf("%-20s", comp.Branch)
-
-	fmt.Printf("%s  %s  [%s]\n", nameCol, branchCol, comp.Type)
-
-	// Skip if local reference - no depend.config to parse
-	if comp.VCS == "local" {
-		return
-	}
-
-	// Try to read depend.config - first from local checkout, then from SVN
-	var dependConfigContent string
-	var err error
-
-	// Check if component is checked out locally
-	componentPath := filepath.Join(workspaceRoot, comp.Path)
-	dependConfigPath := filepath.Join(componentPath, "depend.config")
-
-	if _, statErr := os.Stat(dependConfigPath); statErr == nil {
-		// Component is checked out, read from local filesystem
-		content, readErr := os.ReadFile(dependConfigPath)
-		if readErr == nil {
-			dependConfigContent = string(content)
-		} else {
-			err = readErr
-		}
-	} else {
-		// Component not checked out, fetch from SVN repository
-		dependConfigContent, err = svnClient.Cat(comp.Path, comp.Branch, "depend.config")
-	}
-
-	if err != nil {
-		// No depend.config or error reading it - that's OK, component has no dependencies
-		return
-	}
-
-	// Parse depend.config content
-	dependencies := parseDependConfigContentForTree(dependConfigContent)
-
-	// Recursively print each dependency
-	for _, dep := range dependencies {
-		printComponentTreeFromConfigs(dep, workspaceRoot, svnClient, indent+2)
-	}
-}
 
 func parseDependConfigContentForTree(content string) []*component.Component {
 	var dependencies []*component.Component
