@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 
@@ -1196,6 +1197,31 @@ func runStatus() error {
 		return nil
 	}
 
+	// Recursively parse depend.config for all components so status covers
+	// the full dependency tree, not just top-level workspace.config entries.
+	queue := make([]*component.Component, 0, len(ws.Components))
+	for _, comp := range ws.Components {
+		queue = append(queue, comp)
+	}
+	for len(queue) > 0 {
+		comp := queue[0]
+		queue = queue[1:]
+		if comp.VCS == "local" {
+			continue
+		}
+		destPath := filepath.Join(root, comp.Path)
+		if !svn.IsWorkingCopy(destPath) {
+			continue
+		}
+		dependConfigPath := filepath.Join(destPath, "depend.config")
+		deps, err := parser.ParseDependConfig(comp, dependConfigPath)
+		if err != nil {
+			color.Yellow("Warning: failed to parse %s: %v", dependConfigPath, err)
+			continue
+		}
+		queue = append(queue, deps...)
+	}
+
 	// Create SVN client
 	svnClient, err := svn.NewClientWithConfig(parser.Repo, parser.SvnURL)
 	if err != nil {
@@ -1204,9 +1230,17 @@ func runStatus() error {
 
 	color.Cyan("Workspace status:\n")
 
+	// Sort component names for stable output
+	names := make([]string, 0, len(ws.Components))
+	for name := range ws.Components {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
 	// Check each component
 	hasChanges := false
-	for _, comp := range ws.Components {
+	for _, name := range names {
+		comp := ws.Components[name]
 		if comp.VCS == "local" {
 			continue
 		}
